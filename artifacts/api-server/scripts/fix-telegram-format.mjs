@@ -1,3 +1,4 @@
+// Build-time Telegram alert formatting patch: keep alert messages clean and readable.
 import fs from "node:fs";
 
 const path = "artifacts/api-server/src/services/TelegramService.ts";
