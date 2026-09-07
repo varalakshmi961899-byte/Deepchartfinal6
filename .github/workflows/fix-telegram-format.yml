@@ -3,14 +3,14 @@ name: Fix Telegram alert formatting
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   fix-telegram-format:
-    if: github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, 'Fix Telegram alert formatting')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -19,13 +19,21 @@ jobs:
           fetch-depth: 0
 
       - name: Update Telegram formatting
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
+          if [[ "$COMMIT_MESSAGE" == *"[skip telegram format]"* ]]; then
+            echo "Formatting already applied; nothing to do."
+            exit 0
+          fi
+
           python3 - <<'PY'
           from pathlib import Path
           p = Path('artifacts/api-server/src/services/TelegramService.ts')
           s = p.read_text()
 
-          old = '''    const text = [
+          replacements = [
+          ('''    const text = [
       `${emoji} <b>TRENDLINE ALERT — ${condLabel.toUpperCase()}</b>`,
       ``,
       `📊 <b>Symbol:</b> ${opts.symbol}`,
@@ -36,8 +44,8 @@ jobs:
       opts.notes ? `📝 <b>Notes:</b> ${opts.notes}` : null,
       ``,
       `⏰ ${new Date().toUTCString()}`,
-    ].filter(Boolean).join("\\n");'''
-          new = '''    const text = [
+    ].filter(Boolean).join("\\n");''',
+          '''    const text = [
       `${emoji} <b>TRENDLINE ALERT — ${condLabel.toUpperCase()}</b>`,
       ``,
       `<b>Symbol:</b> ${opts.symbol}`,
@@ -48,12 +56,8 @@ jobs:
       opts.notes ? `<b>Notes:</b> ${opts.notes}` : null,
       ``,
       `<b>Time:</b> ${new Date().toUTCString()}`,
-    ].filter(Boolean).join("\\n");'''
-          if old not in s:
-              raise SystemExit('Expected trendline formatter block not found')
-          s = s.replace(old, new, 1)
-
-          old2 = '''    const text = [
+    ].filter(Boolean).join("\\n");'''),
+          ('''    const text = [
       `${emoji} <b>ZONE ALERT — ${condLabel.toUpperCase()}</b>`,
       ``,
       `📊 <b>Symbol:</b> ${opts.symbol}`,
@@ -64,8 +68,8 @@ jobs:
       opts.notes ? `📝 <b>Notes:</b> ${opts.notes}` : null,
       ``,
       `⏰ ${new Date().toUTCString()}`,
-    ].filter(Boolean).join("\\n");'''
-          new2 = '''    const text = [
+    ].filter(Boolean).join("\\n");''',
+          '''    const text = [
       `${emoji} <b>ZONE ALERT — ${condLabel.toUpperCase()}</b>`,
       ``,
       `<b>Symbol:</b> ${opts.symbol}`,
@@ -76,35 +80,20 @@ jobs:
       opts.notes ? `<b>Notes:</b> ${opts.notes}` : null,
       ``,
       `<b>Time:</b> ${new Date().toUTCString()}`,
-    ].filter(Boolean).join("\\n");'''
-          if old2 not in s:
-              raise SystemExit('Expected zone formatter block not found')
-          s = s.replace(old2, new2, 1)
-
-          old3 = '''    const lines = [
+    ].filter(Boolean).join("\\n");'''),
+          ('''    const lines = [
       `🔔 <b>REMINDER ${opts.reminderNumber}${total} — ${title}</b>`,
       ``,
       `📊 <b>Symbol:</b> ${opts.symbol}`,
       `🎯 <b>Condition:</b> ${conditionLabel[opts.condition] ?? opts.condition.replace(/_/g, " ")}`,
-    ];'''
-          new3 = '''    const lines = [
+    ];''',
+          '''    const lines = [
       `🔔 <b>REMINDER ${opts.reminderNumber}${total} — ${title}</b>`,
       ``,
       `<b>Symbol:</b> ${opts.symbol}`,
       `<b>Condition:</b> ${conditionLabel[opts.condition] ?? opts.condition.replace(/_/g, " ")}`,
-    ];'''
-          if old3 not in s:
-              raise SystemExit('Expected reminder header block not found')
-          s = s.replace(old3, new3, 1)
-          s = s.replace('lines.push(`🎯 <b>Target:</b> $${opts.targetPrice}`);', 'lines.push(`<b>Target:</b> ${opts.targetPrice}`);', 1)
-          s = s.replace('if (opts.zoneType) lines.push(`🗂 <b>Zone:</b> ${opts.zoneType.replace(/_/g, " ")}`);', 'if (opts.zoneType) lines.push(`<b>Zone:</b> ${opts.zoneType.replace(/_/g, " ")}`);', 1)
-          s = s.replace('lines.push(`📏 <b>Range:</b> ${opts.lowerPrice} – ${opts.upperPrice}`);', 'lines.push(`<b>Range:</b> ${opts.lowerPrice} – ${opts.upperPrice}`);', 1)
-          s = s.replace('lines.push(`📐 <b>Drawing:</b> ${opts.drawingType.replace(/_/g, " ")}`);', 'lines.push(`<b>Drawing:</b> ${opts.drawingType.replace(/_/g, " ")}`);', 1)
-          s = s.replace('lines.push(`💹 <b>Triggered at:</b> $${opts.triggeredPrice}`);', 'lines.push(`<b>Triggered Price:</b> ${opts.triggeredPrice}`);', 1)
-          s = s.replace('if (opts.message) lines.push(`📝 <b>Note:</b> ${opts.message}`);', 'if (opts.message) lines.push(`<b>Note:</b> ${opts.message}`);', 1)
-          s = s.replace('lines.push(``, `⏰ ${new Date().toUTCString()}`);', 'lines.push(``, `<b>Time:</b> ${new Date().toUTCString()}`);', 1)
-
-          old4 = '''    const text = [
+    ];'''),
+          ('''    const text = [
       `${meta.emoji} <b>PRICE ALERT — ${meta.title.toUpperCase()}</b>`,
       ``,
       `📊 <b>Symbol:</b> ${opts.symbol}`,
@@ -113,8 +102,8 @@ jobs:
       opts.message ? `📝 <b>Note:</b> ${opts.message}` : null,
       ``,
       `⏰ ${new Date().toUTCString()}`,
-    ].filter(Boolean).join("\\n");'''
-          new4 = '''    const text = [
+    ].filter(Boolean).join("\\n");''',
+          '''    const text = [
       `${meta.emoji} <b>PRICE ALERT — ${meta.title.toUpperCase()}</b>`,
       ``,
       `<b>Symbol:</b> ${opts.symbol}`,
@@ -123,12 +112,8 @@ jobs:
       opts.message ? `<b>Note:</b> ${opts.message}` : null,
       ``,
       `<b>Time:</b> ${new Date().toUTCString()}`,
-    ].filter(Boolean).join("\\n");'''
-          if old4 not in s:
-              raise SystemExit('Expected price formatter block not found')
-          s = s.replace(old4, new4, 1)
-
-          old5 = '''    const text = [
+    ].filter(Boolean).join("\\n");'''),
+          ('''    const text = [
       `🔔 <b>${dtLabel.toUpperCase()} ALERT — ${opts.conditionLabel.toUpperCase()}</b>`,
       ``,
       `${emoji} <b>Symbol:</b> ${opts.symbol}`,
@@ -140,8 +125,8 @@ jobs:
       opts.notes ? `📝 <b>Notes:</b> ${opts.notes}` : null,
       ``,
       `⏰ ${new Date().toUTCString()}`,
-    ].filter(Boolean).join("\\n");'''
-          new5 = '''    const text = [
+    ].filter(Boolean).join("\\n");''',
+          '''    const text = [
       `🔔 <b>${dtLabel.toUpperCase()} ALERT — ${opts.conditionLabel.toUpperCase()}</b>`,
       ``,
       `<b>Symbol:</b> ${opts.symbol}`,
@@ -153,11 +138,21 @@ jobs:
       opts.notes ? `<b>Notes:</b> ${opts.notes}` : null,
       ``,
       `<b>Time:</b> ${new Date().toUTCString()}`,
-    ].filter(Boolean).join("\\n");'''
-          if old5 not in s:
-              raise SystemExit('Expected drawing formatter block not found')
-          s = s.replace(old5, new5, 1)
+    ].filter(Boolean).join("\\n");'''),
+          ]
 
+          for old, new in replacements:
+              if old not in s:
+                  raise SystemExit('Expected formatter block not found')
+              s = s.replace(old, new, 1)
+
+          s = s.replace('lines.push(`🎯 <b>Target:</b> $${opts.targetPrice}`);', 'lines.push(`<b>Target:</b> ${opts.targetPrice}`);', 1)
+          s = s.replace('if (opts.zoneType) lines.push(`🗂 <b>Zone:</b> ${opts.zoneType.replace(/_/g, " ")}`);', 'if (opts.zoneType) lines.push(`<b>Zone:</b> ${opts.zoneType.replace(/_/g, " ")}`);', 1)
+          s = s.replace('lines.push(`📏 <b>Range:</b> ${opts.lowerPrice} – ${opts.upperPrice}`);', 'lines.push(`<b>Range:</b> ${opts.lowerPrice} – ${opts.upperPrice}`);', 1)
+          s = s.replace('lines.push(`📐 <b>Drawing:</b> ${opts.drawingType.replace(/_/g, " ")}`);', 'lines.push(`<b>Drawing:</b> ${opts.drawingType.replace(/_/g, " ")}`);', 1)
+          s = s.replace('lines.push(`💹 <b>Triggered at:</b> $${opts.triggeredPrice}`);', 'lines.push(`<b>Triggered Price:</b> ${opts.triggeredPrice}`);', 1)
+          s = s.replace('if (opts.message) lines.push(`📝 <b>Note:</b> ${opts.message}`);', 'if (opts.message) lines.push(`<b>Note:</b> ${opts.message}`);', 1)
+          s = s.replace('lines.push(``, `⏰ ${new Date().toUTCString()}`);', 'lines.push(``, `<b>Time:</b> ${new Date().toUTCString()}`);', 1)
           p.write_text(s)
           PY
 
@@ -166,5 +161,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add artifacts/api-server/src/services/TelegramService.ts
-          git commit -m "Fix Telegram alert formatting"
+          git diff --cached --quiet && echo "No formatting changes needed." && exit 0
+          git commit -m "Fix Telegram alert formatting [skip telegram format]"
           git push
