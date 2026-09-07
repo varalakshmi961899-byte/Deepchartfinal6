@@ -34,4 +34,4 @@ const replacements = [
 for (const [from, to] of replacements) s = s.replaceAll(from, to);
 
 fs.writeFileSync(path, s);
-console.log("Telegram alert formatting patched for clean Telegram output.");
+console.log("Telegram alert formatting patched for clean Telegram output — final deployment.");
