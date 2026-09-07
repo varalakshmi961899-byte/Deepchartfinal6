@@ -11,4 +11,5 @@ RUN node artifacts/api-server/scripts/fix-telegram-format.mjs
 RUN sed -i 's#https://api.bybit.com#https://api.bytick.com#g' artifacts/api-server/src/routes/candles.ts
 RUN pnpm --filter @workspace/api-server build
 
+# API server image for Railway
 CMD ["pnpm", "--filter", "@workspace/api-server", "start"]
