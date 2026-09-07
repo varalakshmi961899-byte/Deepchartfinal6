@@ -3,17 +3,23 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypt
 import { logger } from "../lib/logger.js";
 
 const ALGO = "aes-256-cbc";
+const LEGACY_STATIC_KEY = "tj-app-config-v1-static-protection-key";
 
-function deriveKey(): Buffer {
-  const base =
-    process.env["BROKER_ENCRYPTION_KEY"] ??
-    process.env["ENCRYPTION_SECRET"] ??
-    "tj-app-config-v1-static-protection-key";
+function deriveKey(base: string): Buffer {
   return createHash("sha256").update(base).digest();
 }
 
+function encryptionKeyCandidates(): string[] {
+  const candidates = [
+    process.env["BROKER_ENCRYPTION_KEY"],
+    process.env["ENCRYPTION_SECRET"],
+    LEGACY_STATIC_KEY,
+  ].filter((value): value is string => Boolean(value));
+  return [...new Set(candidates)];
+}
+
 function encryptValue(plaintext: string): string {
-  const key = deriveKey();
+  const key = deriveKey(encryptionKeyCandidates()[0] ?? LEGACY_STATIC_KEY);
   const iv = randomBytes(16);
   const cipher = createCipheriv(ALGO, key, iv);
   const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
@@ -25,8 +31,18 @@ function decryptValue(ciphertext: string): string {
   if (colonIdx === -1) throw new Error("Invalid ciphertext");
   const iv = Buffer.from(ciphertext.slice(0, colonIdx), "hex");
   const enc = Buffer.from(ciphertext.slice(colonIdx + 1), "hex");
-  const decipher = createDecipheriv(ALGO, deriveKey(), iv);
-  return Buffer.concat([decipher.update(enc), decipher.final()]).toString("utf8");
+
+  let lastError: unknown;
+  for (const base of encryptionKeyCandidates()) {
+    try {
+      const decipher = createDecipheriv(ALGO, deriveKey(base), iv);
+      return Buffer.concat([decipher.update(enc), decipher.final()]).toString("utf8");
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Unable to decrypt configuration");
 }
 
 export const SUPPORTED_KEYS = [
@@ -72,7 +88,8 @@ export class AppConfigService {
       const value = decryptValue(result.rows[0].value_enc as string);
       this.cache.set(key, value);
       return value;
-    } catch {
+    } catch (err) {
+      logger.warn({ key, err: String(err) }, "AppConfigService: failed to decrypt stored configuration");
       return undefined;
     }
   }
@@ -134,7 +151,7 @@ export class AppConfigService {
           decryptFailed++;
           logger.warn(
             { key: row.key, err: String(err) },
-            "AppConfigService: decrypt failed during inject — BROKER_ENCRYPTION_KEY may have changed",
+            "AppConfigService: decrypt failed during inject — no compatible encryption key found",
           );
         }
       }
