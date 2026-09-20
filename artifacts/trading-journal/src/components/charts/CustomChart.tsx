@@ -1391,6 +1391,10 @@ const CustomChart = memo(function CustomChart({
         timeVisible:     true,
         secondsVisible:  false,
         rightOffset:     10,
+        // Lightweight Charts 5.2: conflate only when bars are below the
+        // renderable pixel density. This keeps large-history charts responsive
+        // while preserving full-resolution data and exact indicator values.
+        enableConflation: true,
         // Keep 1m candles physically readable on mobile instead of allowing
         // hundreds of loaded bars to collapse into 1px dash/wick marks.
         // Users can still zoom further out/in with the time-scale controls.
@@ -1600,6 +1604,10 @@ const CustomChart = memo(function CustomChart({
       panActivated: boolean; // true after the first vertical frame activates pan-range
       // PINCH_ZOOM fields — incremental: compare current span to previous frame
       pinchPrevSpan:          number | null;
+      // Horizontal pan input accumulated between display frames. Keeping this
+      // in the gesture state lets high-frequency Android pointer events collapse
+      // into one timeScale update per animation frame without losing movement.
+      hPendingDx:              number;
     };
 
     const PAN_THRESHOLD = 10; // px — minimum travel before CROSSHAIR → CHART_PAN
@@ -1852,6 +1860,7 @@ const CustomChart = memo(function CustomChart({
           pricePerPx: null,
           panActivated: false,
           pinchPrevSpan: null,
+          hPendingDx: 0,
         };
         // Pointer capture ensures onUp fires even if pointer leaves container
         try { container.setPointerCapture(e.pointerId); } catch { /* ok */ }
@@ -2343,7 +2352,8 @@ const CustomChart = memo(function CustomChart({
       const g = ig;
       if (!g || g.pointerId !== e.pointerId) return;
 
-      if (g.hRafId !== null) cancelAnimationFrame(g.hRafId);
+      // Let the pending horizontal-pan frame finish so the last finger movement
+      // is not dropped when the user lifts their finger.
       if (g.vRafId !== null) cancelAnimationFrame(g.vRafId);
       // Release pointer capture for all modes — TIME_SCALE_DRAG and the main
       // chart path (CROSSHAIR / PENDING / CHART_PAN) both use setPointerCapture.
