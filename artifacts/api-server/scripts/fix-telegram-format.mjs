@@ -1,4 +1,5 @@
 // Build-time Telegram alert formatting patch: keep alert messages clean and readable.
+// Railway deployment trigger: keep the API service watch path active.
 import fs from "node:fs";
 
 const path = "artifacts/api-server/src/services/TelegramService.ts";
