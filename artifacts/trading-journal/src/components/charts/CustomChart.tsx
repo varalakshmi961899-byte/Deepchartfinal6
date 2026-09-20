@@ -1947,7 +1947,8 @@ const CustomChart = memo(function CustomChart({
           lastT: performance.now(), isTouch: true,
           velY: 0, hRafId: null, vRafId: null,
           panMin: null, panMax: null, pricePerPx: null, panActivated: false,
-          pinchPrevSpan: null, // initialized on first touchmove
+          pinchPrevSpan: null,
+          hPendingDx: 0, // initialized on first touchmove
         };
         return;
       }
@@ -1986,6 +1987,7 @@ const CustomChart = memo(function CustomChart({
         pricePerPx:   null,
         panActivated: false,
         pinchPrevSpan: null,
+          hPendingDx: 0,
       };
       ig = newIg;
       // Capture the pointer so pointerup fires even if the cursor leaves the
@@ -2633,6 +2635,7 @@ const CustomChart = memo(function CustomChart({
         velY: 0, hRafId: null, vRafId: null,
         panMin: null, panMax: null, pricePerPx: null, panActivated: false,
         pinchPrevSpan: null,
+          hPendingDx: 0,
       };
     };
 
@@ -2726,6 +2729,7 @@ const CustomChart = memo(function CustomChart({
             velY: 0, hRafId: null, vRafId: null,
             panMin: null, panMax: null, pricePerPx: null, panActivated: false,
             pinchPrevSpan: null,
+          hPendingDx: 0,
           };
         }
         // Block LWC from double-handling, then apply our zoom
