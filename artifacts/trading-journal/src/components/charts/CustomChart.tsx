@@ -3382,6 +3382,50 @@ const CustomChart = memo(function CustomChart({
         const cs = mainRef.current;
         if (!cs) return;
 
+        // ── EMA/VWAP realtime update — tick path ───────────────────────────
+        // The previous implementation updated indicators only from
+        // candle_update. That can lag the raw price feed by one or more
+        // websocket events, making EMA lines appear frozen/jumpy while the
+        // candles move. Update the active indicator series from the same
+        // client-side aggregated bar used by the candle renderer.
+        if (isNewBar) {
+          for (const key of Object.keys(emaRefs.current) as (keyof IndicatorState)[]) {
+            if (key !== "vwap") {
+              const curr = emaCurrRef.current[key];
+              if (curr !== undefined) emaPrevRef.current[key] = curr;
+            }
+          }
+          emaLastBarTimeRef.current = bar.time;
+        }
+
+        for (const [key, s] of Object.entries(emaRefs.current) as [keyof IndicatorState, ISeriesApi<"Line">][]) {
+          let value: number | undefined;
+
+          if (key === "vwap") {
+            const tp = (bar.high + bar.low + bar.close) / 3;
+            const cv = vwapCumRef.current.cumV + bar.volume;
+            value = cv > 0
+              ? (vwapCumRef.current.cumPV + tp * bar.volume) / cv
+              : undefined;
+          } else {
+            const prev = emaPrevRef.current[key];
+            if (prev !== undefined) {
+              const k = 2 / (EMA_PERIODS[key] + 1);
+              const ema = bar.close * k + prev * (1 - k);
+              emaCurrRef.current[key] = ema;
+              value = ema;
+            }
+          }
+
+          if (value !== undefined) {
+            try {
+              // Equal timestamps replace the current indicator point;
+              // a new timestamp appends the new point.
+              s.update({ time: bar.time as Time, value });
+            } catch { /* chart may be recreating during symbol switch */ }
+          }
+        }
+
         // ── Frame-coalescing chart update — tick path ─────────────────────
         // Store latest bar only (discards all intermediate ticks in same frame).
         // NO series.update() is called synchronously — zero LWC work per tick.
