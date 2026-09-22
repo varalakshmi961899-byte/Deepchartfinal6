@@ -549,7 +549,7 @@ export function renderDrawingsToCanvas(
         const rx = Math.min(px[0].x, px[1].x), ry = Math.min(px[0].y, px[1].y);
         // Rectangles are zone drawings: extend their right edge through the
         // entire visible chart/future space instead of stopping at the latest bar.
-        const rectRight = (style.extendRight ?? true) ? W + 20 : Math.max(px[0].x, px[1].x);
+        const rectRight = (style.extendRight ?? false) ? W + 20 : Math.max(px[0].x, px[1].x);
         const rw = Math.max(1, rectRight - rx), rh = Math.abs(px[1].y - px[0].y);
         if ((style.fillOpacity ?? 0) > 0) {
           ctx.save();
