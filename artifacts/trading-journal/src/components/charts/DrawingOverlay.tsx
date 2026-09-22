@@ -136,7 +136,7 @@ function hitTestDrawingAtPx(
       return Math.abs(cx - pts[0].x) < T;
     case "rect": {
       if (pts.length < 2) return false;
-      const x1 = Math.min(pts[0].x, pts[1].x), x2 = Math.max(pts[0].x, pts[1].x);
+      const x1 = Math.min(pts[0].x, pts[1].x), x2 = (d.style.extendRight ?? true) ? Number.POSITIVE_INFINITY : Math.max(pts[0].x, pts[1].x);
       const y1 = Math.min(pts[0].y, pts[1].y), y2 = Math.max(pts[0].y, pts[1].y);
       if (cx < x1 - T || cx > x2 + T || cy < y1 - T || cy > y2 + T) return false;
       return (
@@ -304,11 +304,13 @@ const DrawingShape = memo(function DrawingShape({
       case "rect": {
         if (px.length < 2) return null;
         const rxc = Math.min(px[0].x, px[1].x), ryc = Math.min(px[0].y, px[1].y);
-        const rwc = Math.abs(px[1].x - px[0].x), rhc = Math.abs(px[1].y - px[0].y);
+        const rectRight = (style.extendRight ?? true) ? W + 20 : Math.max(px[0].x, px[1].x);
+        const rwc = Math.max(1, rectRight - rxc), rhc = Math.abs(px[1].y - px[0].y);
+        const rightHandle = (style.extendRight ?? true) ? { x: W, y: px[1].y } : px[1];
         return (
           <g opacity={op}>
             <rect x={rxc} y={ryc} width={Math.max(1, rwc)} height={Math.max(1, rhc)} stroke="transparent" strokeWidth={HIT} fill="transparent" {...hitProps} />
-            <Anchor i={0} p={px[0]} /><Anchor i={1} p={px[1]} />
+            <Anchor i={0} p={px[0]} /><Anchor i={1} p={rightHandle} />
           </g>
         );
       }
