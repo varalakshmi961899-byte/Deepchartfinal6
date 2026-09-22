@@ -2804,69 +2804,65 @@ const DrawingOverlay = memo(function DrawingOverlay({ symbol, timeframe, onDrawi
   // ── Coordinate helpers ────────────────────────────────────────────────────
   const toPx = useCallback((pt: DrawingPoint): Px | null => {
     if (!chart || !candle) return null;
-    const x = chart.timeScale().timeToCoordinate(pt.time as Time);
+    const ts = chart.timeScale();
     const y = candle.priceToCoordinate(pt.price);
+    if (y === null) return null;
 
-    // Point is in the future area (beyond last candle): timeToCoordinate returns null.
-    // Use lightweight-charts logical-coordinate API which works everywhere, including
-    // the rightOffset future-space, regardless of zoom level / bar spacing.
-    if (x === null && y !== null) {
-      const toSec = (t: Time) =>
-        typeof t === "number" ? t : Math.floor(new Date(t as string).getTime() / 1000);
+    const directX = ts.timeToCoordinate(pt.time as Time);
+    if (directX !== null) return { x: directX as number, y: y as number };
 
-      // Primary approach: logical coordinates (robust at any zoom level)
-      const visRange = chart.timeScale().getVisibleLogicalRange();
-      if (visRange !== null) {
-        let lastRealTime: number | null = null;
-        let lastRealLogical: number | null = null;
-        const searchFrom = Math.ceil(visRange.to as number);
+    // Future-time points: derive the mapping from the actual last loaded bar,
+    // not from the visible range. This allows a rectangle endpoint to be stored
+    // arbitrarily far into the future and remain anchored when the chart is panned.
+    const bars = (barsRef.current ?? []) as OhlcBar[];
+    const toSec = (t: Time) =>
+      typeof t === "number" ? t : Math.floor(new Date(t as string).getTime() / 1000);
 
-        for (let li = searchFrom; li >= Math.max(0, searchFrom - 300); li--) {
-          const coord = chart.timeScale().logicalToCoordinate(li as Logical);
-          if (coord === null) continue;
-          const t = chart.timeScale().coordinateToTime(coord as number);
-          if (t !== null) { lastRealTime = toSec(t); lastRealLogical = li; break; }
-        }
-
-        if (lastRealTime !== null && lastRealLogical !== null) {
+    if (bars.length > 0) {
+      const lastBar = bars[bars.length - 1];
+      const lastX = ts.timeToCoordinate(lastBar.time as Time);
+      if (lastX !== null) {
+        const lastLogical = ts.coordinateToLogical(lastX as number);
+        if (lastLogical !== null) {
           let intervalSec = getIntervalSec(timeframe);
-          const prevCoord = chart.timeScale().logicalToCoordinate((lastRealLogical - 1) as Logical);
-          if (prevCoord !== null) {
-            const prevT = chart.timeScale().coordinateToTime(prevCoord as number);
-            if (prevT !== null) intervalSec = Math.max(60, lastRealTime - toSec(prevT));
+          if (bars.length >= 2) {
+            const prev = bars[bars.length - 2];
+            const delta = toSec(lastBar.time) - toSec(prev.time);
+            if (delta > 0) intervalSec = delta;
           }
-          if (intervalSec > 0) {
-            const logicalDelta = (pt.time - lastRealTime) / intervalSec;
-            const futureLogical = lastRealLogical + logicalDelta;
-            const extraX = chart.timeScale().logicalToCoordinate(futureLogical as Logical);
-            if (extraX !== null) return { x: extraX as number, y: y as number };
+
+          const logicalDelta = intervalSec > 0
+            ? (toSec(pt.time) - toSec(lastBar.time)) / intervalSec
+            : 0;
+          const futureLogical = (lastLogical as number) + logicalDelta;
+          const futureX = ts.logicalToCoordinate(futureLogical as Logical);
+          if (futureX !== null) {
+            return { x: futureX as number, y: y as number };
           }
         }
       }
-
-      // Fallback: pixel scan with higher limit
-      const overlayW = overlayRef.current?.clientWidth ?? 1200;
-      const maxX = overlayW - 73;
-      let rx1 = maxX, rt1: Time | null = null;
-      for (let i = 0; i < 3000 && rt1 === null; i++, rx1--) {
-        rt1 = chart.timeScale().coordinateToTime(rx1);
-      }
-      if (rt1 === null) return null;
-      let rx2 = rx1 - 2, rt2: Time | null = null;
-      for (let i = 0; i < 200 && rt2 === null; i++, rx2--) {
-        rt2 = chart.timeScale().coordinateToTime(rx2);
-      }
-      if (rt2 === null) return null;
-      const s1 = toSec(rt1), s2 = toSec(rt2);
-      const dx = rx1 - rx2;
-      if (dx === 0 || s1 === s2) return null;
-      return { x: rx1 + (pt.time - s1) * (dx / (s1 - s2)), y: y as number };
     }
 
-    if (x === null || y === null) return null;
-    return { x: x as number, y: y as number };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chart, candle, timeframe]); // renderTick removed — toPx calls LWC imperative API, always current
+    // Fallback for sparse/replay data: extrapolate from two real coordinates.
+    let x1 = (overlayRef.current?.clientWidth ?? 1200) - 1;
+    let t1: Time | null = null;
+    for (let i = 0; i < 5000 && t1 === null && x1 >= 0; i++, x1--) {
+      t1 = ts.coordinateToTime(x1);
+    }
+    if (t1 === null) return null;
+
+    let x2 = x1 - 1;
+    let t2: Time | null = null;
+    for (let i = 0; i < 500 && t2 === null && x2 >= 0; i++, x2--) {
+      t2 = ts.coordinateToTime(x2);
+    }
+    if (t2 === null) return null;
+
+    const s1 = toSec(t1), s2 = toSec(t2);
+    const secPerPx = (s1 - s2) / (x1 - x2);
+    if (!Number.isFinite(secPerPx) || secPerPx === 0) return null;
+    return { x: x1 + (toSec(pt.time) - s1) / secPerPx, y: y as number };
+  }, [chart, candle, timeframe, barsRef]);
 
   // ── Keep canvas refs in sync (synchronous, no cost — just ref writes) ───────
   drawingsRef.current   = drawings;
