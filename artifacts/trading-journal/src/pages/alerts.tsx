@@ -1109,15 +1109,48 @@ function apiTrendlineToTrendlineAlert(t: Record<string, unknown>): TrendlineAler
 }
 
 async function loadAllAlerts() {
-  const [pa, za, ta] = await Promise.all([
+  const [pa, za, ta, dr] = await Promise.all([
     fetch("/api/alerts").then(r => r.json()),
     fetch("/api/zones").then(r => r.json()),
     fetch("/api/trendlines").then(r => r.json()),
+    fetch("/api/drawings").then(r => r.ok ? r.json() : []).catch(() => []),
   ]);
+
+  // Reconcile older trendline alerts with the chart's persistent TL-NNN drawing ID.
+  // Newer alerts already carry drawingDisplayId; this also repairs older alerts
+  // by matching symbol/timeframe and the two chart anchor points.
+  const drawings = toArray<Record<string, unknown>>(dr, "alerts.loadAllAlerts.drawings");
+  const trendlineWithDrawingId = toArray<Record<string, unknown>>(
+    ta, "alerts.loadAllAlerts.trendlineAlerts"
+  ).map(t => {
+    const alert = apiTrendlineToTrendlineAlert(t);
+    const match = drawings.find(d => {
+      if (String(d["symbol"] ?? "").toUpperCase() !== String(alert.symbol).toUpperCase()) return false;
+      if (String(d["timeframe"] ?? "") !== String(alert.timeframe ?? "")) return false;
+      const tool = String(d["toolType"] ?? "");
+      if (!["trendline", "ray", "extended"].includes(tool)) return false;
+      const points = Array.isArray(d["points"]) ? d["points"] as Array<Record<string, unknown>> : [];
+      if (points.length < 2) return false;
+      const p1 = points[0], p2 = points[1];
+      const t1 = typeof p1["time"] === "number" ? p1["time"] * 1000 : new Date(String(p1["time"] ?? "")).getTime();
+      const t2 = typeof p2["time"] === "number" ? p2["time"] * 1000 : new Date(String(p2["time"] ?? "")).getTime();
+      return Number.isFinite(t1) && Number.isFinite(t2)
+        && Math.abs(t1 - new Date(alert.point1Time).getTime()) <= 1500
+        && Math.abs(t2 - new Date(alert.point2Time).getTime()) <= 1500
+        && Math.abs(Number(p1["price"]) - Number(alert.point1Price)) < 1e-8
+        && Math.abs(Number(p2["price"]) - Number(alert.point2Price)) < 1e-8;
+    });
+    if (!match) return alert;
+    const displayId = typeof match["displayId"] === "string" && match["displayId"]
+      ? match["displayId"]
+      : "TL-" + String(match["id"] ?? "").padStart(3, "0");
+    return { ...alert, drawingDisplayId: displayId };
+  });
+
   return {
-    priceAlerts:     toArray<Record<string, unknown>>(pa, "alerts.loadAllAlerts.priceAlerts").map(apiAlertToPriceAlert),
-    zoneAlerts:      toArray<Record<string, unknown>>(za, "alerts.loadAllAlerts.zoneAlerts").map(apiZoneToZoneAlert),
-    trendlineAlerts: toArray<Record<string, unknown>>(ta, "alerts.loadAllAlerts.trendlineAlerts").map(apiTrendlineToTrendlineAlert),
+    priceAlerts: toArray<Record<string, unknown>>(pa, "alerts.loadAllAlerts.priceAlerts").map(apiAlertToPriceAlert),
+    zoneAlerts: toArray<Record<string, unknown>>(za, "alerts.loadAllAlerts.zoneAlerts").map(apiZoneToZoneAlert),
+    trendlineAlerts: trendlineWithDrawingId,
   };
 }
 
