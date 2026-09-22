@@ -7,8 +7,8 @@ if (!fs.existsSync(file)) throw new Error(`DrawingOverlay.tsx not found: ${file}
 let src = fs.readFileSync(file, "utf8");
 
 const marker = "// [chart-fix] World-space drawing coordinate interpolation for rectangles";
-if (src.includes(marker)) {
-  console.log("[rectangle-world-coordinates] Already installed; no changes required.");
+if (src.includes(marker) || src.includes("Future-time points: derive the mapping from the actual last loaded bar")) {
+  console.log("[rectangle-world-coordinates] Compatible world-coordinate implementation already present; no changes required.");
   process.exit(0);
 }
 
