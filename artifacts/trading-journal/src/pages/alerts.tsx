@@ -922,6 +922,9 @@ function TrendlineAlertCard({ alert, onTogglePause, onDelete }: {
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="flex items-center gap-2">
           <span className="text-sm font-bold text-white">{alert.symbol}</span>
+          <span className="text-[10px] font-mono font-semibold text-primary/70 bg-primary/10 border border-primary/15 rounded-md px-1.5 py-0.5">
+            {alert.drawingDisplayId ?? `TL-${alert.id.replace(/^t_/, "")}`}
+          </span>
           <span className="text-[10px] text-muted-foreground/60">{alert.timeframe}</span>
           <StatusBadge status={alert.status} />
         </div>
@@ -1100,6 +1103,7 @@ function apiTrendlineToTrendlineAlert(t: Record<string, unknown>): TrendlineAler
     point2Price: t["point2Price"] as number,
     point2Time:  t["point2Time"]  as string,
     condition: (t["condition"] as TrendlineAlert["condition"]) ?? "break",
+    drawingDisplayId: (t["drawingDisplayId"] as string | undefined) ?? `TL-${t["id"]}`,
     notes: (t["notes"] as string) ?? "",
     status: t["isTriggered"] ? "triggered" : t["isActive"] ? "active" : "paused",
     createdAt: t["createdAt"] as string,
