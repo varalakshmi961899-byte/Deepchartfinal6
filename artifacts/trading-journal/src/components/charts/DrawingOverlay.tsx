@@ -304,9 +304,9 @@ const DrawingShape = memo(function DrawingShape({
       case "rect": {
         if (px.length < 2) return null;
         const rxc = Math.min(px[0].x, px[1].x), ryc = Math.min(px[0].y, px[1].y);
-        const rectRight = (style.extendRight ?? false) ? W + 20 : Math.max(px[0].x, px[1].x);
+        const rectRight = Math.max(px[0].x, px[1].x);
         const rwc = Math.max(1, rectRight - rxc), rhc = Math.abs(px[1].y - px[0].y);
-        const rightHandle = (style.extendRight ?? false) ? { x: W, y: px[1].y } : px[1];
+        const rightHandle = px[1];
         return (
           <g opacity={op}>
             <rect x={rxc} y={ryc} width={Math.max(1, rwc)} height={Math.max(1, rhc)} stroke="transparent" strokeWidth={HIT} fill="transparent" {...hitProps} />
