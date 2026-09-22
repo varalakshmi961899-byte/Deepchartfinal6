@@ -1126,19 +1126,28 @@ async function loadAllAlerts() {
     const alert = apiTrendlineToTrendlineAlert(t);
     const match = drawings.find(d => {
       if (String(d["symbol"] ?? "").toUpperCase() !== String(alert.symbol).toUpperCase()) return false;
-      if (String(d["timeframe"] ?? "") !== String(alert.timeframe ?? "")) return false;
+      // Older records may use "15" for alerts and "15m" for drawings.
+      // The anchor points are the authoritative identity of the drawing.
       const tool = String(d["toolType"] ?? "");
       if (!["trendline", "ray", "extended"].includes(tool)) return false;
       const points = Array.isArray(d["points"]) ? d["points"] as Array<Record<string, unknown>> : [];
       if (points.length < 2) return false;
       const p1 = points[0], p2 = points[1];
-      const t1 = typeof p1["time"] === "number" ? p1["time"] * 1000 : new Date(String(p1["time"] ?? "")).getTime();
-      const t2 = typeof p2["time"] === "number" ? p2["time"] * 1000 : new Date(String(p2["time"] ?? "")).getTime();
-      return Number.isFinite(t1) && Number.isFinite(t2)
-        && Math.abs(t1 - new Date(alert.point1Time).getTime()) <= 1500
-        && Math.abs(t2 - new Date(alert.point2Time).getTime()) <= 1500
-        && Math.abs(Number(p1["price"]) - Number(alert.point1Price)) < 1e-8
-        && Math.abs(Number(p2["price"]) - Number(alert.point2Price)) < 1e-8;
+      const toMs = (v: unknown) => typeof v === "number"
+        ? (v < 10_000_000_000 ? v * 1000 : v)
+        : new Date(String(v ?? "")).getTime();
+      const a1 = new Date(alert.point1Time).getTime();
+      const a2 = new Date(alert.point2Time).getTime();
+      const t1 = toMs(p1["time"]), t2 = toMs(p2["time"]);
+      const direct = Number.isFinite(t1) && Number.isFinite(t2)
+        && Math.abs(t1 - a1) <= 5000 && Math.abs(t2 - a2) <= 5000
+        && Math.abs(Number(p1["price"]) - Number(alert.point1Price)) < 1e-7
+        && Math.abs(Number(p2["price"]) - Number(alert.point2Price)) < 1e-7;
+      const reversed = Number.isFinite(t1) && Number.isFinite(t2)
+        && Math.abs(t2 - a1) <= 5000 && Math.abs(t1 - a2) <= 5000
+        && Math.abs(Number(p2["price"]) - Number(alert.point1Price)) < 1e-7
+        && Math.abs(Number(p1["price"]) - Number(alert.point2Price)) < 1e-7;
+      return direct || reversed;
     });
     if (!match) return alert;
     const displayId = typeof match["displayId"] === "string" && match["displayId"]
