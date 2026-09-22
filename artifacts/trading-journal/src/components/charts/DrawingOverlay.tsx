@@ -2884,66 +2884,100 @@ const DrawingOverlay = memo(function DrawingOverlay({ symbol, timeframe, onDrawi
 
   const fromPx = useCallback((clientX: number, clientY: number): DrawingPoint | null => {
     if (!chart || !candle || !overlayRef.current) return null;
-    const rect   = overlayRef.current.getBoundingClientRect();
+
+    const rect = overlayRef.current.getBoundingClientRect();
     const localX = clientX - rect.left;
-    const price  = candle.coordinateToPrice(clientY - rect.top);
+    const localY = clientY - rect.top;
+    const price = candle.coordinateToPrice(localY);
     if (price === null) return null;
 
+    const ts = chart.timeScale();
     const toSec = (t: Time) =>
       typeof t === "number" ? t : Math.floor(new Date(t as string).getTime() / 1000);
 
-    const rawTime = chart.timeScale().coordinateToTime(localX);
-    if (rawTime !== null) {
-      return { time: toSec(rawTime), price };
+    // Normal in-chart coordinates.
+    const rawTime = ts.coordinateToTime(localX);
+    if (rawTime !== null) return { time: toSec(rawTime), price };
+
+    // Robust future/right-side projection.
+    // LWC intentionally returns null outside the loaded candle coordinates. Drawing
+    // handles must still be draggable into the chart's rightOffset/future area.
+    // Resolve a real bar at/near the right edge, calculate seconds-per-pixel, then
+    // extrapolate to the requested pointer coordinate. This also works when the
+    // pointer is captured and moves over the price-scale area.
+    const plotRight = Math.max(1, overlayRef.current.clientWidth);
+    const sampleX = Math.min(Math.max(plotRight - 1, 1), Math.max(localX - 1, 1));
+
+    let rightTime: number | null = null;
+    let rightX = sampleX;
+    for (let x = sampleX; x >= Math.max(0, sampleX - 4000); x--) {
+      const t = ts.coordinateToTime(x);
+      if (t !== null) {
+        rightTime = toSec(t);
+        rightX = x;
+        break;
+      }
     }
 
-    // Future area: coordinateToTime returns null past the last candle.
-    // Use logical-coordinate API (works at any zoom/barSpacing, no pixel-scan limit).
-    const logicalPos = chart.timeScale().coordinateToLogical(localX);
+    if (rightTime !== null) {
+      let prevTime: number | null = null;
+      let prevX = rightX - 1;
+      for (let x = rightX - 1; x >= Math.max(0, rightX - 200); x--) {
+        const t = ts.coordinateToTime(x);
+        if (t !== null) {
+          prevTime = toSec(t);
+          prevX = x;
+          break;
+        }
+      }
+
+      if (prevTime !== null && rightX !== prevX && rightTime !== prevTime) {
+        const secPerPx = (rightTime - prevTime) / (rightX - prevX);
+        return {
+          time: Math.round(rightTime + (localX - rightX) * secPerPx),
+          price,
+        };
+      }
+
+      // Last-resort logical-bar extrapolation.
+      const logical = ts.coordinateToLogical(rightX);
+      if (logical !== null) {
+        const interval = Math.max(60, getIntervalSec(timeframe));
+        const rightLogical = Math.round(logical as number);
+        const x0 = ts.logicalToCoordinate(rightLogical as Logical);
+        if (x0 !== null) {
+          return {
+            time: Math.round(rightTime + (localX - (x0 as number)) / Math.max(1, Math.abs((ts.logicalToCoordinate((rightLogical + 1) as Logical) ?? (x0 as number) + 1) - (x0 as number))) * interval),
+            price,
+          };
+        }
+      }
+    }
+
+    // Existing logical-coordinate fallback for unusual sparse/history-loading cases.
+    const logicalPos = ts.coordinateToLogical(localX);
     if (logicalPos !== null) {
-      let lastRealTime: number | null = null;
-      let lastRealLogical: number | null = null;
       const searchFrom = Math.ceil(logicalPos as number);
-
       for (let li = searchFrom; li >= Math.max(0, searchFrom - 300); li--) {
-        const coord = chart.timeScale().logicalToCoordinate(li as Logical);
+        const coord = ts.logicalToCoordinate(li as Logical);
         if (coord === null) continue;
-        const t = chart.timeScale().coordinateToTime(coord as number);
-        if (t !== null) { lastRealTime = toSec(t); lastRealLogical = li; break; }
-      }
+        const t = ts.coordinateToTime(coord as number);
+        if (t === null) continue;
 
-      if (lastRealTime !== null && lastRealLogical !== null) {
         let intervalSec = getIntervalSec(timeframe);
-        const prevCoord = chart.timeScale().logicalToCoordinate((lastRealLogical - 1) as Logical);
+        const prevCoord = ts.logicalToCoordinate((li - 1) as Logical);
         if (prevCoord !== null) {
-          const prevT = chart.timeScale().coordinateToTime(prevCoord as number);
-          if (prevT !== null) intervalSec = Math.max(60, lastRealTime - toSec(prevT));
+          const prevT = ts.coordinateToTime(prevCoord as number);
+          if (prevT !== null) intervalSec = Math.max(60, toSec(t) - toSec(prevT));
         }
-        if (intervalSec > 0) {
-          const logicalDelta = (logicalPos as number) - lastRealLogical;
-          return { time: Math.round(lastRealTime + logicalDelta * intervalSec), price };
-        }
+        return {
+          time: Math.round(toSec(t) + ((logicalPos as number) - li) * intervalSec),
+          price,
+        };
       }
     }
 
-    // Fallback: pixel scan with higher limit
-    let rx1 = localX - 1, rt1: Time | null = null;
-    for (let i = 0; i < 3000 && rt1 === null; i++, rx1 -= 1) {
-      rt1 = chart.timeScale().coordinateToTime(rx1);
-    }
-    if (rt1 === null) return null;
-
-    let rx2 = rx1 - 2, rt2: Time | null = null;
-    for (let i = 0; i < 200 && rt2 === null; i++, rx2 -= 1) {
-      rt2 = chart.timeScale().coordinateToTime(rx2);
-    }
-    if (rt2 !== null) {
-      const s1 = toSec(rt1), s2 = toSec(rt2);
-      const dx = rx1 - rx2;
-      if (dx !== 0 && s1 !== s2)
-        return { time: Math.round(s1 + (localX - rx1) * (s1 - s2) / dx), price };
-    }
-    return { time: toSec(rt1), price };
+    return null;
   }, [chart, candle, timeframe]);
 
   // ── Shift + OHLC snap ─────────────────────────────────────────────────────
