@@ -136,7 +136,9 @@ function hitTestDrawingAtPx(
       return Math.abs(cx - pts[0].x) < T;
     case "rect": {
       if (pts.length < 2) return false;
-      const x1 = Math.min(pts[0].x, pts[1].x), x2 = (d.style.extendRight ?? true) ? Number.POSITIVE_INFINITY : Math.max(pts[0].x, pts[1].x);
+      const rawX1 = Math.min(pts[0].x, pts[1].x), rawX2 = Math.max(pts[0].x, pts[1].x);
+      const x1 = d.style.extendLeft ? Number.NEGATIVE_INFINITY : rawX1;
+      const x2 = d.style.extendRight ? Number.POSITIVE_INFINITY : rawX2;
       const y1 = Math.min(pts[0].y, pts[1].y), y2 = Math.max(pts[0].y, pts[1].y);
       if (cx < x1 - T || cx > x2 + T || cy < y1 - T || cy > y2 + T) return false;
       return (
@@ -303,8 +305,10 @@ const DrawingShape = memo(function DrawingShape({
       );
       case "rect": {
         if (px.length < 2) return null;
-        const rxc = Math.min(px[0].x, px[1].x), ryc = Math.min(px[0].y, px[1].y);
-        const rectRight = Math.max(px[0].x, px[1].x);
+        const rawLeft = Math.min(px[0].x, px[1].x), rawRight = Math.max(px[0].x, px[1].x);
+        const rxc = style.extendLeft ? -20 : rawLeft;
+        const rectRight = style.extendRight ? W + 20 : rawRight;
+        const ryc = Math.min(px[0].y, px[1].y);
         const rwc = Math.max(1, rectRight - rxc), rhc = Math.abs(px[1].y - px[0].y);
         const rightHandle = px[1];
         return (
@@ -627,8 +631,11 @@ const DrawingShape = memo(function DrawingShape({
 
     case "rect": {
       if (px.length < 2) return null;
-      const rx = Math.min(px[0].x, px[1].x), ry = Math.min(px[0].y, px[1].y);
-      const rw = Math.abs(px[1].x - px[0].x), rh = Math.abs(px[1].y - px[0].y);
+      const rawLeft = Math.min(px[0].x, px[1].x), rawRight = Math.max(px[0].x, px[1].x);
+      const rx = style.extendLeft ? -20 : rawLeft;
+      const rectRight = style.extendRight ? W + 20 : rawRight;
+      const ry = Math.min(px[0].y, px[1].y);
+      const rw = Math.max(1, rectRight - rx), rh = Math.abs(px[1].y - px[0].y);
       return (
         <g opacity={op} {...eraseClick}>
           <Glow shape x={rx} y={ry} w={rw} h={rh} />
