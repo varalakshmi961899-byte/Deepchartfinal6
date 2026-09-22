@@ -546,10 +546,10 @@ export function renderDrawingsToCanvas(
 
       case "rect": {
         if (px.length < 2) break;
-        const rx = Math.min(px[0].x, px[1].x), ry = Math.min(px[0].y, px[1].y);
-        // Rectangles are zone drawings: extend their right edge through the
-        // entire visible chart/future space instead of stopping at the latest bar.
-        const rectRight = Math.max(px[0].x, px[1].x);
+        const rawLeft = Math.min(px[0].x, px[1].x), rawRight = Math.max(px[0].x, px[1].x);
+        const rx = style.extendLeft ? -20 : rawLeft;
+        const rectRight = style.extendRight ? W + 20 : rawRight;
+        const ry = Math.min(px[0].y, px[1].y);
         const rw = Math.max(1, rectRight - rx), rh = Math.abs(px[1].y - px[0].y);
         if ((style.fillOpacity ?? 0) > 0) {
           ctx.save();
@@ -935,8 +935,10 @@ export function renderDrawingsToCanvas(
             }
             case "rect": {
               if (px.length < 2) break;
-              const rx = Math.min(px[0].x, px[1].x), ry = Math.min(px[0].y, px[1].y);
-              const rectRight = (style.extendRight ?? true) ? W + 20 : Math.max(px[0].x, px[1].x);
+              const rawLeft = Math.min(px[0].x, px[1].x), rawRight = Math.max(px[0].x, px[1].x);
+              const rx = style.extendLeft ? -20 : rawLeft;
+              const rectRight = style.extendRight ? W + 20 : rawRight;
+              const ry = Math.min(px[0].y, px[1].y);
               const rw = Math.max(1, rectRight - rx), rh = Math.abs(px[1].y - px[0].y);
               if ((style.fillOpacity ?? 0) > 0) {
                 ctx.save(); ctx.shadowBlur = 0;
