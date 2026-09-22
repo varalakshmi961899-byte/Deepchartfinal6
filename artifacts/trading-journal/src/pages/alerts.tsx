@@ -922,9 +922,6 @@ function TrendlineAlertCard({ alert, onTogglePause, onDelete }: {
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="flex items-center gap-2">
           <span className="text-sm font-bold text-white">{alert.symbol}</span>
-          <span className="text-[10px] font-mono font-semibold text-primary/70 bg-primary/10 border border-primary/15 rounded-md px-1.5 py-0.5">
-            {alert.drawingDisplayId ?? `TL-${alert.id.replace(/^t_/, "")}`}
-          </span>
           <span className="text-[10px] text-muted-foreground/60">{alert.timeframe}</span>
           <StatusBadge status={alert.status} />
         </div>
