@@ -12,7 +12,7 @@ if (src.includes(marker)) {
   process.exit(0);
 }
 
-const re = /  const toPx = useCallback\\(\\(pt: DrawingPoint\\): Px \\| null => \\{[\\s\\S]*?\\n  \\}, \\[chart, candle, timeframe\\\\]\\); \/\/ renderTick removed \\u2014 toPx calls LWC imperative API, always current/;
+const re = /  const toPx = useCallback\(\(pt: DrawingPoint\): Px \| null => \{[\s\S]*?\n  \}, \[chart, candle, timeframe\]\); \/\/ renderTick removed \u2014 toPx calls LWC imperative API, always current/;
 
 if (!re.test(src)) {
   throw new Error("DrawingOverlay toPx block not found; refusing unsafe replacement.");
@@ -31,21 +31,15 @@ const replacement = String.raw`  ${marker}
     const y = candle.priceToCoordinate(pt.price);
     if (y === null) return null;
 
-    // Fast path: exact chart time.
     const exactX = ts.timeToCoordinate(pt.time as Time);
     if (exactX !== null) return { x: exactX as number, y: y as number };
 
-    // Robust path: resolve the drawing time to the nearest logical bar.
-    // logicalToCoordinate() remains tied to the chart's current pan/zoom, so
-    // every frame reprojects the drawing instead of accumulating pixel drift.
     const nearestIndex = ts.timeToIndex(pt.time as Time, true);
     if (nearestIndex !== null) {
       const nearestX = ts.logicalToCoordinate(nearestIndex as Logical);
       if (nearestX !== null) {
         const bars = barsRef.current as OhlcBar[];
         if (bars.length >= 2) {
-          // Refine the nearest-bar position with timestamp interpolation when
-          // the drawing time falls between two loaded candles.
           let lo = 0;
           let hi = bars.length - 1;
           while (lo <= hi) {
@@ -73,9 +67,7 @@ const replacement = String.raw`  ${marker}
       }
     }
 
-    // Last fallback: retain the old logical future-space calculation for points
-    // outside the loaded data window. This is only used when no logical index is
-    // available yet (e.g. history is still loading).
+    // Final fallback for a point outside the currently loaded data window.
     const visRange = ts.getVisibleLogicalRange();
     if (visRange !== null) {
       const toSec = (t: Time) =>
