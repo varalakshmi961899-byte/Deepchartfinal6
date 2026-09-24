@@ -17,6 +17,9 @@ export class TelegramService {
   private chatId:        string | undefined;
   private enabled:       boolean = false;
   private globalEnabled: boolean = true;  // global on/off toggle (does not disconnect)
+  private interactionRunning = false;
+  private interactionAbort?: AbortController;
+  private updateOffset = 0;
 
   constructor() {
     this.botToken = process.env["TELEGRAM_BOT_TOKEN"];
@@ -162,6 +165,136 @@ export class TelegramService {
     }
   }
 
+
+  /** Start Telegram command/callback handling. Webhook if configured, otherwise getUpdates polling. */
+  async startInteractionListener(): Promise<void> {
+    if (!this.enabled || !this.botToken || this.interactionRunning) return;
+    this.interactionRunning = true;
+    this.interactionAbort = new AbortController();
+    const webhookUrl = process.env["TELEGRAM_WEBHOOK_URL"]?.trim();
+    if (webhookUrl) {
+      await this.configureWebhook(webhookUrl);
+      logger.info({ webhookUrl }, "TelegramService: webhook interaction mode enabled");
+    } else {
+      logger.info("TelegramService: getUpdates polling interaction mode enabled");
+      void this.pollUpdates();
+    }
+  }
+
+  async stopInteractionListener(): Promise<void> {
+    this.interactionRunning = false;
+    this.interactionAbort?.abort();
+    this.interactionAbort = undefined;
+  }
+
+  private async configureWebhook(baseUrl: string): Promise<void> {
+    if (!this.botToken) return;
+    const url = `${baseUrl.replace(/\\/+$/, "")}/api/telegram/webhook`;
+    const secret = process.env["TELEGRAM_WEBHOOK_SECRET"]?.trim();
+    try {
+      const response = await fetch(`${TELEGRAM_API}/bot${this.botToken}/setWebhook`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url, ...(secret ? { secret_token: secret } : {}), allowed_updates: ["message", "callback_query"] }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) logger.error({ status: response.status, body, url }, "TelegramService: failed to configure webhook");
+    } catch (err) {
+      logger.error({ err, url }, "TelegramService: webhook configuration failed");
+    }
+  }
+
+  async handleWebhookUpdate(update: unknown): Promise<void> {
+    await this.handleTelegramUpdate(update);
+  }
+
+  private async pollUpdates(): Promise<void> {
+    while (this.interactionRunning && this.botToken) {
+      try {
+        const query = new URLSearchParams({ timeout: "25", offset: String(this.updateOffset), allowed_updates: JSON.stringify(["message", "callback_query"]) });
+        const response = await fetch(`${TELEGRAM_API}/bot${this.botToken}/getUpdates?${query.toString()}`, { signal: this.interactionAbort?.signal });
+        const body = await response.json().catch(() => ({})) as { ok?: boolean; result?: Array<{ update_id: number; [key: string]: unknown }>; description?: string };
+        if (!response.ok || !body.ok) {
+          logger.warn({ status: response.status, description: body.description }, "TelegramService: getUpdates failed");
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          continue;
+        }
+        for (const update of body.result ?? []) {
+          this.updateOffset = Math.max(this.updateOffset, update.update_id + 1);
+          await this.handleTelegramUpdate(update);
+        }
+      } catch (err) {
+        if (!this.interactionRunning) break;
+        logger.warn({ err }, "TelegramService: getUpdates polling error");
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+    }
+  }
+
+  private async handleTelegramUpdate(update: unknown): Promise<void> {
+    if (!update || typeof update !== "object") return;
+    const u = update as Record<string, any>;
+    const message = u.message as Record<string, any> | undefined;
+    const callback = u.callback_query as Record<string, any> | undefined;
+    const chatId = String(message?.chat?.id ?? callback?.message?.chat?.id ?? "");
+    if (!chatId || !this.chatId || chatId !== String(this.chatId)) {
+      logger.warn({ chatId }, "TelegramService: unauthorized interaction ignored");
+      if (callback?.id) await this.answerCallbackQuery(String(callback.id), "Unauthorized", true);
+      return;
+    }
+    if (message?.text === "/start" || message?.text === "/menu") {
+      await this.sendMainMenu(chatId);
+      return;
+    }
+    if (callback?.id && typeof callback?.data === "string") {
+      await this.handleCallback(String(callback.id), chatId, callback.data);
+    }
+  }
+
+  private async answerCallbackQuery(id: string, text?: string, showAlert = false): Promise<void> {
+    if (!this.botToken) return;
+    try {
+      await fetch(`${TELEGRAM_API}/bot${this.botToken}/answerCallbackQuery`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ callback_query_id: id, ...(text ? { text } : {}), show_alert: showAlert }),
+      });
+    } catch (err) { logger.debug({ err }, "TelegramService: answerCallbackQuery failed"); }
+  }
+
+  private async handleCallback(callbackId: string, chatId: string, data: string): Promise<void> {
+    await this.answerCallbackQuery(callbackId);
+    const screens: Record<string, { text: string; keyboard: unknown }> = {
+      "menu:trendlines": { text: "📈 <b>TRENDLINES</b>\n\nPhase 1 connected. Existing trendline records will be shown in the next phase.", keyboard: this.backKeyboard() },
+      "menu:alerts": { text: "🔔 <b>ALERTS</b>\n\nExisting alert system is connected. Controls will be wired in the next phase.", keyboard: this.backKeyboard() },
+      "menu:create": { text: "➕ <b>CREATE</b>\n\nChart-linked creation will be added in the next phase.", keyboard: this.backKeyboard() },
+      "menu:modify": { text: "✏️ <b>MODIFY</b>\n\nTrendline selection will be added in the next phase.", keyboard: this.backKeyboard() },
+      "menu:snooze": { text: "😴 <b>SNOOZE</b>\n\nSnooze controls will be added in the next phase.", keyboard: this.backKeyboard() },
+      "menu:resume": { text: "▶️ <b>RESUME</b>\n\nResume controls will be added in the next phase.", keyboard: this.backKeyboard() },
+      "menu:delete": { text: "🗑 <b>DELETE</b>\n\nDelete controls will be added in the next phase.", keyboard: this.backKeyboard() },
+      "menu:stats": { text: "📊 <b>STATISTICS</b>\n\nStatistics will be connected to existing alert tables in the next phase.", keyboard: this.backKeyboard() },
+    };
+    if (data === "menu:home") { await this.sendMainMenu(chatId); return; }
+    const screen = screens[data];
+    if (screen) await this.sendMessage(screen.text, chatId, true, screen.keyboard);
+  }
+
+  private mainMenuKeyboard() {
+    return { inline_keyboard: [
+      [{ text: "📈 Trendlines", callback_data: "menu:trendlines" }, { text: "🔔 Alerts", callback_data: "menu:alerts" }],
+      [{ text: "➕ Create", callback_data: "menu:create" }, { text: "✏️ Modify", callback_data: "menu:modify" }],
+      [{ text: "😴 Snooze", callback_data: "menu:snooze" }, { text: "▶️ Resume", callback_data: "menu:resume" }],
+      [{ text: "🗑 Delete", callback_data: "menu:delete" }, { text: "📊 Statistics", callback_data: "menu:stats" }],
+      [{ text: "🔄 Refresh", callback_data: "menu:home" }],
+    ] };
+  }
+
+  private backKeyboard() {
+    return { inline_keyboard: [[{ text: "⬅️ Back", callback_data: "menu:home" }]] };
+  }
+
+  private async sendMainMenu(chatId: string): Promise<void> {
+    await this.sendMessage("🤖 <b>DEEPCHART ALERT MANAGER</b>\n\nChoose an action:", chatId, true, this.mainMenuKeyboard());
+  }
+
   isEnabled(): boolean {
     return this.enabled;
   }
@@ -191,6 +324,7 @@ export class TelegramService {
     text:            string,
     chatId?:         string,
     bypassGlobal?:   boolean,
+    replyMarkup?:     unknown,
   ): Promise<{ success: boolean; telegramResponse?: unknown; error?: string }> {
     if (!this.enabled || !this.botToken) {
       logger.warn("TelegramService: sendMessage SKIPPED — not configured (no bot token/chat ID). Configure via Settings → Telegram Bot.");
@@ -203,7 +337,7 @@ export class TelegramService {
     }
 
     const target  = chatId ?? this.chatId!;
-    const payload = { chat_id: target, text, parse_mode: "HTML" };
+    const payload = { chat_id: target, text, parse_mode: "HTML", ...(replyMarkup ? { reply_markup: replyMarkup } : {}) };
 
     logger.info(
       { tokenMasked: maskToken(this.botToken), targetChatId: target, payloadLength: text.length },
