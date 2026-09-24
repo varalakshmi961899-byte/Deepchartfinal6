@@ -720,11 +720,10 @@ export class TelegramService {
   private mainMenuKeyboard() {
     return { inline_keyboard: [
       [{ text: "📈 Trendlines", callback_data: "menu:trendlines" }, { text: "🔔 Alerts", callback_data: "menu:alerts" }],
-      [{ text: "🔎 Scanner", callback_data: "menu:scanner" }, { text: "➕ Create", callback_data: "menu:create" }],
+      [{ text: "🔎 Scanner", callback_data: "menu:scanner" }],
       [{ text: "✏️ Modify", callback_data: "menu:modify" }],
       [{ text: "😴 Snooze", callback_data: "menu:snooze" }, { text: "▶️ Resume", callback_data: "menu:resume" }],
       [{ text: "🗑 Delete", callback_data: "menu:delete" }, { text: "📊 Statistics", callback_data: "menu:stats" }],
-      [{ text: "🔄 Refresh", callback_data: "menu:home" }],
     ] };
   }
 
