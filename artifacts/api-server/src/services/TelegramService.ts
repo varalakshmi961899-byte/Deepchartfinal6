@@ -191,7 +191,8 @@ export class TelegramService {
 
   private async configureWebhook(baseUrl: string): Promise<void> {
     if (!this.botToken) return;
-    const url = `${baseUrl.replace(/\\/+$/, "")}/api/telegram/webhook`;
+    const cleanBaseUrl = baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
+    const url = `${cleanBaseUrl}/api/telegram/webhook`;
     const secret = process.env["TELEGRAM_WEBHOOK_SECRET"]?.trim();
     try {
       const response = await fetch(`${TELEGRAM_API}/bot${this.botToken}/setWebhook`, {
