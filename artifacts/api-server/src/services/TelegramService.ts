@@ -1,5 +1,6 @@
 import { db, pool, settingsTable, watchlistTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { AppConfigService } from "./AppConfigService.js";
 
@@ -393,12 +394,12 @@ export class TelegramService {
   }
 
   private async sendScanner(chatId: string): Promise<void> {
-    const rows = await db.select().from(watchlistTable).orderBy(watchlistTable.position);
+    const rows = await db.select().from(watchlistTable).where(eq(watchlistTable.isFavorite, true)).orderBy(watchlistTable.position);
     if (!rows.length) {
       await this.sendMessage("🔎 <b>MARKET SCANNER</b>\n\n⚠️ Your DeepChart watchlist is empty.\nAdd coins to the app Watchlist first, then scan again.", chatId, true, this.backKeyboard());
       return;
     }
-    await this.sendMessage("🔎 <b>MARKET SCANNER</b>\n\nScanning your watchlist on <b>15m • 1H • 4H</b> using EMA 20/50/200…", chatId, true);
+    await this.sendMessage("🔎 <b>MARKET SCANNER</b>\n\n<b>Watchlist EMA scan</b>\nTimeframes: 15m • 1H • 4H\nIndicators: EMA 20 • EMA 50 • EMA 200\n\nScanning your current Watchlist…", chatId, true);
     const results: Array<{ symbol: string; details: Awaited<ReturnType<TelegramService["fetchScannerEma"]>>[] }> = [];
     for (const row of rows.slice(0, 40)) {
       const details: Awaited<ReturnType<TelegramService["fetchScannerEma"]>>[] = [];
@@ -412,15 +413,15 @@ export class TelegramService {
       await this.sendMessage("🔎 <b>MARKET SCANNER</b>\n\n❌ No watchlist coin returned usable Bybit EMA data.", chatId, true, this.backKeyboard());
       return;
     }
-    const lines = ["🔎 <b>WATCHLIST EMA SCANNER</b>", "", "🟢 Bullish  🔴 Bearish  🟡 Mixed", ""];
+    const lines = ["🔎 <b>WATCHLIST EMA SCANNER</b>", "", "<b>Timeframes:</b> 15m • 1H • 4H", "<b>Indicators:</b> EMA 20 / 50 / 200", ""];
     const keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
     for (const item of results) {
-      const summary = item.details.map(d => d.interval + " " + this.scannerBadge(d.trend)).join("  ");
+      const summary = item.details.map(d => d.interval + " " + this.scannerBadge(d.trend) + " " + d.trend).join("\n");
       const bull = item.details.filter(d => d.trend === "STRONG BULL" || d.trend === "BULL").length;
       const bear = item.details.filter(d => d.trend === "STRONG BEAR" || d.trend === "BEAR").length;
       const overall = bull > bear ? "🟢 BULLISH" : bear > bull ? "🔴 BEARISH" : "🟡 MIXED";
-      lines.push("<b>" + this.escapeHtml(item.symbol) + "</b> — " + overall);
-      lines.push(summary);
+      lines.push("<b>" + this.escapeHtml(item.symbol) + "</b>  " + overall);
+      lines.push(summary, "");
       keyboard.push([{ text: "📊 " + item.symbol + " — details", callback_data: "sc:" + item.symbol.slice(0, 20) }]);
     }
     keyboard.push([{ text: "🔄 Scan Again", callback_data: "menu:scanner" }]);
@@ -430,7 +431,7 @@ export class TelegramService {
 
   private async sendScannerDetail(chatId: string, rawSymbol: string): Promise<void> {
     const symbol = rawSymbol.toUpperCase().trim();
-    const rows = await db.select().from(watchlistTable);
+    const rows = await db.select().from(watchlistTable).where(eq(watchlistTable.isFavorite, true));
     const row = rows.find(item => item.symbol.toUpperCase() === symbol);
     if (!row) { await this.sendMessage("❌ Coin is no longer in your watchlist.", chatId, true, this.backKeyboard()); return; }
     const details: Array<Awaited<ReturnType<TelegramService["fetchScannerEma"]>> | null> = [];
