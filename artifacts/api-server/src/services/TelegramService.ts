@@ -516,30 +516,101 @@ export class TelegramService {
     const symbol = rawSymbol.toUpperCase().trim();
     const rows = await db.select().from(watchlistTable).where(eq(watchlistTable.isFavorite, true));
     const row = rows.find(item => item.symbol.toUpperCase() === symbol);
-    if (!row) { await this.sendMessage("❌ Coin is no longer in your watchlist.", chatId, true, this.backKeyboard()); return; }
+    if (!row) {
+      await this.sendMessage("Coin is no longer in your watchlist.", chatId, true, this.backKeyboard());
+      return;
+    }
+
     const details: Array<Awaited<ReturnType<TelegramService["fetchScannerEma"]>> | null> = [];
     for (const tf of this.scannerTimeframes) {
-      try { details.push(await this.fetchScannerEma(row.symbol, tf.key)); }
-      catch (err) { logger.warn({ symbol: row.symbol, timeframe: tf.label, err: String(err) }, "TelegramService: scanner detail fetch failed"); details.push(null); }
+      try {
+        details.push(await this.fetchScannerEma(row.symbol, tf.key));
+      } catch (err) {
+        logger.warn({ symbol: row.symbol, timeframe: tf.label, err: String(err) }, "TelegramService: scanner detail fetch failed");
+        details.push(null);
+      }
     }
-    const valid = details.filter((d): d is Awaited<ReturnType<TelegramService["fetchScannerEma"]>> => !!d);
-    if (!valid.length) { await this.sendMessage("❌ No EMA data available for <b>" + this.escapeHtml(row.symbol) + "</b>.", chatId, true, this.backKeyboard()); return; }
-    const blocks: string[] = ["<b>" + this.escapeHtml(row.symbol) + " — EMA Scanner</b>", "", "EMA logic: price vs EMA20/50/200 + EMA alignment.", " = price above EMA •  = price below EMA •  = mixed", "Source: " + (await getCtraderSymbolRow(row.symbol).catch(() => null) ? "cTrader" : "Bybit"), ""];
-    for (const d of valid) {
-      blocks.push("<b>" + d.interval + " — " + this.scannerBadge(d.trend) + " " + this.scannerTrendLabel(d.trend) + "</b>");
+
+    const valid = details.filter(
+      (d): d is Awaited<ReturnType<TelegramService["fetchScannerEma"]>> => !!d,
+    );
+    if (!valid.length) {
+      await this.sendMessage(
+        "<b>" + this.escapeHtml(row.symbol) + " — EMA Scanner Details</b>\n\nNo EMA data is currently available for this symbol.",
+        chatId,
+        true,
+        this.backKeyboard(),
+      );
+      return;
+    }
+
+    const ctrader = await getCtraderSymbolRow(row.symbol).catch(() => null);
+    const overallBull = valid.filter(d => d.trend === "BULL" || d.trend === "STRONG BULL").length;
+    const overallBear = valid.filter(d => d.trend === "BEAR" || d.trend === "STRONG BEAR").length;
+    const overall = overallBull > overallBear ? "Bullish" : overallBear > overallBull ? "Bearish" : "Mixed";
+
+    const blocks: string[] = [
+      "<b>" + this.escapeHtml(row.symbol) + " — EMA Scanner Details</b>",
+      "",
+      "<b>Overall:</b> " + overall,
+      "<b>Timeframes:</b> 15m / 1H / 4H",
+      "<b>Indicators:</b> EMA 20 / EMA 50 / EMA 200",
+      "<b>Data source:</b> " + (ctrader ? "cTrader" : "Bybit"),
+      "",
+    ];
+
+    for (let i = 0; i < this.scannerTimeframes.length; i++) {
+      const tf = this.scannerTimeframes[i];
+      const d = details[i];
+
+      blocks.push("<b>" + tf.label + "</b>");
+      if (!d) {
+        blocks.push("Data unavailable for this timeframe.", "");
+        continue;
+      }
+
+      const p20 = d.price > d.ema20;
+      const p50 = d.price > d.ema50;
+      const p200 = d.price > d.ema200;
+      const alignment =
+        d.price > d.ema20 && d.ema20 > d.ema50 && d.ema50 > d.ema200
+          ? "Strong bullish alignment"
+          : d.price < d.ema20 && d.ema20 < d.ema50 && d.ema50 < d.ema200
+            ? "Strong bearish alignment"
+            : "Mixed alignment";
+
+      blocks.push("Trend: <b>" + this.scannerTrendLabel(d.trend) + "</b>");
       blocks.push("Price: <b>" + this.formatScannerNumber(d.price) + "</b>");
-      blocks.push("EMA 20: " + this.formatScannerNumber(d.ema20) + " " + (d.bullish20 ? "Bullish" : "Bearish"));
-      blocks.push("EMA 50: " + this.formatScannerNumber(d.ema50) + " " + (d.bullish50 ? "Bullish" : "Bearish"));
-      blocks.push("EMA 200: " + this.formatScannerNumber(d.ema200) + " " + (d.bullish200 ? "Bullish" : "Bearish"));
-      blocks.push("Structure: 20 " + (d.ema20 > d.ema50 ? ">" : "<") + " 50 " + (d.ema50 > d.ema200 ? ">" : "<") + " 200", "");
+      blocks.push("EMA 20: " + this.formatScannerNumber(d.ema20) + " (" + (p20 ? "Price above" : "Price below") + ")");
+      blocks.push("EMA 50: " + this.formatScannerNumber(d.ema50) + " (" + (p50 ? "Price above" : "Price below") + ")");
+      blocks.push("EMA 200: " + this.formatScannerNumber(d.ema200) + " (" + (p200 ? "Price above" : "Price below") + ")");
+      blocks.push(
+        "EMA structure: 20 " + (d.ema20 > d.ema50 ? ">" : "<") +
+        " 50 " + (d.ema50 > d.ema200 ? ">" : "<") + " 200",
+      );
+      blocks.push("Assessment: " + alignment, "");
     }
-    blocks.push("Strong Bull: price > EMA20 > EMA50 > EMA200.");
-    blocks.push("Strong Bear: price < EMA20 < EMA50 < EMA200.");
-    blocks.push("Mixed: EMAs are not fully aligned.");
-    await this.sendMessage(blocks.join("\n").slice(0, 3900), chatId, true, { inline_keyboard: [
-      [{ text: "Refresh", callback_data: "scd:" + row.symbol.slice(0, 20) }],
-      [{ text: "Scanner", callback_data: "menu:scanner" }, { text: "Menu", callback_data: "menu:home" }],
-    ] });
+
+    blocks.push(
+      "<b>How to read:</b>",
+      "Bullish = price is above the selected EMA.",
+      "Bearish = price is below the selected EMA.",
+      "Strong Bull = price > EMA20 > EMA50 > EMA200.",
+      "Strong Bear = price < EMA20 < EMA50 < EMA200.",
+      "Mixed = the EMAs are not fully aligned.",
+    );
+
+    await this.sendMessage(
+      blocks.join("\n").slice(0, 3900),
+      chatId,
+      true,
+      {
+        inline_keyboard: [
+          [{ text: "Refresh Details", callback_data: "scd:" + row.symbol.slice(0, 20) }],
+          [{ text: "Scanner", callback_data: "menu:scanner" }, { text: "Menu", callback_data: "menu:home" }],
+        ],
+      },
+    );
   }
   private async sendTrendlineList(chatId: string, title: string): Promise<void> {
     const result = await pool.query(`
