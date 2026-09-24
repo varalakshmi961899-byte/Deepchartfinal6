@@ -2,6 +2,8 @@ import { db, pool, settingsTable, watchlistTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { AppConfigService } from "./AppConfigService.js";
+import { ctraderTickEngine } from "./CtraderTickEngine.js";
+import { getCtraderSymbolRow } from "../routes/ctrader_spots.js";
 
 const TELEGRAM_API = "https://api.telegram.org";
 
@@ -355,13 +357,41 @@ export class TelegramService {
     bullish20: boolean; bullish50: boolean; bullish200: boolean;
     trend: "STRONG BULL" | "BULL" | "MIXED" | "BEAR" | "STRONG BEAR";
   }> {
-    const normalized = this.normalizeScannerSymbol(symbol);
-    const params = new URLSearchParams({ category: "linear", symbol: normalized, interval, limit: "500" });
-    const response = await fetch("https://api.bybit.com/v5/market/kline?" + params.toString(), { headers: { accept: "application/json" } });
-    if (!response.ok) throw new Error("Bybit HTTP " + response.status);
-    const json = await response.json() as { retCode?: number; retMsg?: string; result?: { list?: string[][] } };
-    if (json.retCode !== 0) throw new Error("Bybit " + json.retCode + ": " + (json.retMsg ?? "unknown error"));
-    const closes = (json.result?.list ?? []).map(row => Number(row[4])).filter(Number.isFinite).reverse();
+    // Use the same market-data boundary as DeepChart itself:
+    // cTrader for FX/metals/indices/other non-crypto watchlist symbols,
+    // Bybit linear futures for crypto symbols such as SOLUSD/BTCUSD.
+    const ctraderRow = await getCtraderSymbolRow(symbol).catch(() => null);
+    let closes: number[];
+
+    if (ctraderRow) {
+      if (!ctraderTickEngine.isStreaming()) {
+        throw new Error("cTrader market feed is not streaming");
+      }
+      const bars = await ctraderTickEngine.fetchTrendbarsOnSession(
+        ctraderRow.symbolId,
+        interval,
+        500,
+        15_000,
+      );
+      if (!bars.length) throw new Error("No cTrader trendbars returned");
+      closes = bars
+        .slice()
+        .sort((a, b) => a.time - b.time)
+        .map(bar => Number(bar.close))
+        .filter(Number.isFinite);
+    } else {
+      const normalized = this.normalizeScannerSymbol(symbol);
+      const params = new URLSearchParams({ category: "linear", symbol: normalized, interval, limit: "500" });
+      const response = await fetch("https://api.bybit.com/v5/market/kline?" + params.toString(), { headers: { accept: "application/json" } });
+      if (!response.ok) throw new Error("Bybit HTTP " + response.status);
+      const json = await response.json() as { retCode?: number; retMsg?: string; result?: { list?: string[][] } };
+      if (json.retCode !== 0) throw new Error("Bybit " + json.retCode + ": " + (json.retMsg ?? "unknown error"));
+      closes = (json.result?.list ?? [])
+        .map(row => Number(row[4]))
+        .filter(Number.isFinite)
+        .reverse();
+    }
+
     if (closes.length < 200) throw new Error("Not enough candle history for EMA200");
     const price = closes.at(-1)!;
     const ema20 = this.calculateEma(closes, 20);
@@ -399,28 +429,44 @@ export class TelegramService {
       return;
     }
     await this.sendMessage("🔎 <b>MARKET SCANNER</b>\n\n<b>Watchlist EMA scan</b>\nTimeframes: 15m • 1H • 4H\nIndicators: EMA 20 • EMA 50 • EMA 200\n\nScanning your current Watchlist…", chatId, true);
-    const results: Array<{ symbol: string; details: Awaited<ReturnType<TelegramService["fetchScannerEma"]>>[] }> = [];
+    const results: Array<{
+      symbol: string;
+      details: Awaited<ReturnType<TelegramService["fetchScannerEma"]>>[];
+      errors: string[];
+    }> = [];
+    // Keep every active Watchlist symbol in the Telegram result. A data-source
+    // failure must never silently remove a symbol from the user's Watchlist.
     for (const row of rows.slice(0, 40)) {
       const details: Awaited<ReturnType<TelegramService["fetchScannerEma"]>>[] = [];
+      const errors: string[] = [];
       for (const tf of this.scannerTimeframes) {
-        try { details.push(await this.fetchScannerEma(row.symbol, tf.key)); }
-        catch (err) { logger.warn({ symbol: row.symbol, timeframe: tf.label, err: String(err) }, "TelegramService: scanner EMA fetch failed"); }
+        try {
+          details.push(await this.fetchScannerEma(row.symbol, tf.key));
+        } catch (err) {
+          const message = String(err);
+          errors.push(tf.label + ": " + message);
+          logger.warn({ symbol: row.symbol, timeframe: tf.label, err: message }, "TelegramService: scanner EMA fetch failed");
+        }
       }
-      if (details.length) results.push({ symbol: row.symbol, details });
+      results.push({ symbol: row.symbol, details, errors });
     }
-    if (!results.length) {
-      await this.sendMessage("🔎 <b>MARKET SCANNER</b>\n\n❌ No watchlist coin returned usable Bybit EMA data.", chatId, true, this.backKeyboard());
-      return;
-    }
-    const lines = ["🔎 <b>WATCHLIST EMA SCANNER</b>", "", "<b>Timeframes:</b> 15m • 1H • 4H", "<b>Indicators:</b> EMA 20 / 50 / 200", ""];
+    const lines = ["🔎 <b>WATCHLIST EMA SCANNER</b>", "", `<b>Watchlist symbols:</b> ${results.length}`, "<b>Timeframes:</b> 15m • 1H • 4H", "<b>Indicators:</b> EMA 20 / 50 / 200", ""];
     const keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
     for (const item of results) {
-      const summary = item.details.map(d => d.interval + " " + this.scannerBadge(d.trend) + " " + d.trend).join("\n");
       const bull = item.details.filter(d => d.trend === "STRONG BULL" || d.trend === "BULL").length;
       const bear = item.details.filter(d => d.trend === "STRONG BEAR" || d.trend === "BEAR").length;
-      const overall = bull > bear ? "🟢 BULLISH" : bear > bull ? "🔴 BEARISH" : "🟡 MIXED";
+      const overall = item.details.length === 0
+        ? "⚪ DATA UNAVAILABLE"
+        : bull > bear ? "🟢 BULLISH" : bear > bull ? "🔴 BEARISH" : "🟡 MIXED";
       lines.push("<b>" + this.escapeHtml(item.symbol) + "</b>  " + overall);
-      lines.push(summary, "");
+      if (item.details.length) {
+        for (const d of item.details) {
+          lines.push("  " + d.interval + "  " + this.scannerBadge(d.trend) + " " + d.trend);
+        }
+      } else {
+        lines.push("  ⚪ EMA data unavailable");
+      }
+      lines.push("");
       keyboard.push([{ text: "📊 " + item.symbol + " — details", callback_data: "sc:" + item.symbol.slice(0, 20) }]);
     }
     keyboard.push([{ text: "🔄 Scan Again", callback_data: "menu:scanner" }]);
@@ -440,7 +486,7 @@ export class TelegramService {
     }
     const valid = details.filter((d): d is Awaited<ReturnType<TelegramService["fetchScannerEma"]>> => !!d);
     if (!valid.length) { await this.sendMessage("❌ No EMA data available for <b>" + this.escapeHtml(row.symbol) + "</b>.", chatId, true, this.backKeyboard()); return; }
-    const blocks: string[] = ["🔎 <b>" + this.escapeHtml(row.symbol) + " — EMA SCANNER</b>", "", "EMA logic: price vs EMA20/50/200 + EMA alignment.", "🟢 = price above EMA • 🔴 = price below EMA", ""];
+    const blocks: string[] = ["🔎 <b>" + this.escapeHtml(row.symbol) + " — EMA SCANNER</b>", "", "EMA logic: price vs EMA20/50/200 + EMA alignment.", "🟢 = price above EMA • 🔴 = price below EMA", "📡 Source: " + (await getCtraderSymbolRow(row.symbol).catch(() => null) ? "cTrader" : "Bybit"), ""];
     for (const d of valid) {
       blocks.push("⏱ <b>" + d.interval + " — " + d.trend + " " + this.scannerBadge(d.trend) + "</b>");
       blocks.push("💰 Price: <b>" + this.formatScannerNumber(d.price) + "</b>");
