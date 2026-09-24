@@ -343,7 +343,7 @@ export class TelegramService {
 
   private async sendTrendlineDetail(chatId: string, id: number): Promise<void> {
     if (!Number.isInteger(id)) return;
-    const result = await db.execute(`
+    const result = await pool.query(`
       SELECT id, symbol, timeframe, condition, drawing_type, alert_status, is_active, telegram_enabled,
              drawing_display_id, notes, point1_price, point1_time, point2_price, point2_time,
              triggered_price, triggered_at, repeat_mode, reminder_count
@@ -382,7 +382,7 @@ export class TelegramService {
 
   private async sendModifyMenu(chatId: string, id: number): Promise<void> {
     const conditions = ["touch","break","retest","cross_above","cross_below","breakout","atr_proximity","above_price","below_price","touch_price","enter_zone","exit_zone","rejection"];
-    const result = await db.execute(`SELECT drawing_display_id, condition FROM trendlines WHERE id = ${id} LIMIT 1`);
+    const result = await pool.query(`SELECT drawing_display_id, condition FROM trendlines WHERE id = ${id} LIMIT 1`);
     const r = (result.rows as any[])[0];
     if (!r) { await this.sendMessage("❌ Trendline not found.", chatId, true, this.backKeyboard()); return; }
     const buttons = [];
@@ -396,26 +396,26 @@ export class TelegramService {
   private async modifyTrendline(chatId: string, id: number, field: "condition", value: string): Promise<void> {
     const allowed = new Set(["touch","break","retest","cross_above","cross_below","breakout","atr_proximity","above_price","below_price","touch_price","enter_zone","exit_zone","rejection"]);
     if (!allowed.has(value)) throw new Error("Unsupported condition");
-    await db.execute(`UPDATE trendlines SET condition = ${value} WHERE id = ${id}`);
+    await pool.query(`UPDATE trendlines SET condition = ${value} WHERE id = ${id}`);
     await this.reloadAlertEngine();
     await this.sendMessage(`✅ Condition updated to <b>${value}</b>.`, chatId, true);
     await this.sendTrendlineDetail(chatId, id);
   }
 
   private async toggleTelegram(chatId: string, id: number): Promise<void> {
-    await db.execute(`UPDATE trendlines SET telegram_enabled = NOT telegram_enabled WHERE id = ${id}`);
+    await pool.query(`UPDATE trendlines SET telegram_enabled = NOT telegram_enabled WHERE id = ${id}`);
     await this.reloadAlertEngine();
     await this.sendTrendlineDetail(chatId, id);
   }
 
   private async setTrendlineStatus(chatId: string, id: number, status: "paused" | "active"): Promise<void> {
-    await db.execute(`UPDATE trendlines SET alert_status = ${status}, is_active = ${status === "active"} WHERE id = ${id}`);
+    await pool.query(`UPDATE trendlines SET alert_status = ${status}, is_active = ${status === "active"} WHERE id = ${id}`);
     await this.reloadAlertEngine();
     await this.sendTrendlineDetail(chatId, id);
   }
 
   private async deleteTrendline(chatId: string, id: number): Promise<void> {
-    await db.execute(`DELETE FROM trendlines WHERE id = ${id}`);
+    await pool.query(`DELETE FROM trendlines WHERE id = ${id}`);
     await this.reloadAlertEngine();
     await this.sendMessage(`✅ Trendline deleted.\n\nThe existing chart ID was removed from active alerts.`, chatId, true, {
       inline_keyboard: [[{ text: "📈 Trendlines", callback_data: "menu:trendlines" }, { text: "🏠 Menu", callback_data: "menu:home" }]]
@@ -423,7 +423,7 @@ export class TelegramService {
   }
 
   private async sendRecentAlerts(chatId: string): Promise<void> {
-    const result = await db.execute(`
+    const result = await pool.query(`
       SELECT id, symbol, timeframe, drawing_type, condition, price_at_trigger, projected_price, message, created_at
       FROM alert_events_v2 ORDER BY created_at DESC LIMIT 15
     `);
@@ -441,7 +441,7 @@ export class TelegramService {
   }
 
   private async sendAlertDetail(chatId: string, id: number): Promise<void> {
-    const result = await db.execute(`
+    const result = await pool.query(`
       SELECT id, symbol, timeframe, drawing_type, condition, price_at_trigger, projected_price, message, created_at
       FROM alert_events_v2 WHERE id = ${id} LIMIT 1
     `);
@@ -465,7 +465,7 @@ export class TelegramService {
   }
 
   private async sendStatistics(chatId: string): Promise<void> {
-    const result = await db.execute(`
+    const result = await pool.query(`
       SELECT
         COUNT(*)::int AS total,
         COUNT(*) FILTER (WHERE alert_status = 'active' AND is_active = true)::int AS active,
@@ -474,7 +474,7 @@ export class TelegramService {
         COUNT(*) FILTER (WHERE alert_status = 'expired')::int AS expired
       FROM trendlines
     `);
-    const events = await db.execute(`SELECT COUNT(*)::int AS total FROM alert_events_v2`);
+    const events = await pool.query(`SELECT COUNT(*)::int AS total FROM alert_events_v2`);
     const r = (result.rows as any[])[0] || {};
     const e = (events.rows as any[])[0] || {};
     const text = [
