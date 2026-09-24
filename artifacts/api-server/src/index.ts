@@ -28,7 +28,8 @@ const marketData       = new MarketDataService();
 const candleAggregator = new CandleAggregator();
 const telegram         = new TelegramService();
 const delta             = new DeltaService(marketData);
-const alertEngine       = new AlertEngine(marketData, telegram, wsManager, candleAggregator);\ntelegram.setAlertEngine(alertEngine);
+const alertEngine       = new AlertEngine(marketData, telegram, wsManager, candleAggregator);
+telegram.setAlertEngine(alertEngine);
 const healthMonitor     = new FeedHealthMonitor(marketData, wsManager, telegram);
 
 // cTrader is reserved for FX/metals/indices/energies. Crypto symbols must
