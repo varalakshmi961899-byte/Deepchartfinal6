@@ -198,7 +198,10 @@ healthMonitor.start();
   }, "Startup: credential injection complete — env status after inject");
 
   await Promise.all([
-    telegram.init().then(() => logger.info({ telegramEnabled: telegram.isEnabled() }, "TelegramService: init complete")),
+    telegram.init().then(async () => {
+      logger.info({ telegramEnabled: telegram.isEnabled() }, "TelegramService: init complete");
+      await telegram.startInteractionListener();
+    }),
     delta.init().then(() => logger.info("DeltaService: init complete")),
   ]).catch((err) => logger.warn({ err }, "Service init warning"));
 
