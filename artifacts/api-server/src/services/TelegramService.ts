@@ -364,15 +364,42 @@ export class TelegramService {
     let closes: number[];
 
     if (ctraderRow) {
-      if (!ctraderTickEngine.isStreaming()) {
-        throw new Error("cTrader market feed is not streaming");
+      // Match the same sequence used by the chart's /candles route:
+      // wait for the authenticated cTrader session, make sure the symbol is
+      // subscribed, then request historical trendbars on that live session.
+      let status = ctraderTickEngine.getStatus();
+      if (status.status !== "streaming") {
+        throw new Error("cTrader market feed is not streaming (status=" + status.status + ")");
       }
-      const bars = await ctraderTickEngine.fetchTrendbarsOnSession(
-        ctraderRow.symbolId,
-        interval,
-        500,
-        15_000,
-      );
+      if (!status.subscribedSymbols.some((name: string) => name.toUpperCase() === ctraderRow.symbolName.toUpperCase())) {
+        ctraderTickEngine.addSymbol(ctraderRow.symbolId, ctraderRow.symbolName);
+        // Subscription is not required by the cTrader historical API itself,
+        // but adding it keeps scanner and chart on the exact same market-data path.
+      }
+
+      let bars: Awaited<ReturnType<typeof ctraderTickEngine.fetchTrendbarsOnSession>>;
+      try {
+        bars = await ctraderTickEngine.fetchTrendbarsOnSession(
+          ctraderRow.symbolId,
+          interval,
+          500,
+          15_000,
+        );
+      } catch (firstErr) {
+        // One short retry handles the race where cTrader has just transitioned
+        // from account-auth/subscribing to streaming.
+        status = ctraderTickEngine.getStatus();
+        if (status.status !== "streaming") {
+          throw firstErr;
+        }
+        await new Promise(resolve => setTimeout(resolve, 500));
+        bars = await ctraderTickEngine.fetchTrendbarsOnSession(
+          ctraderRow.symbolId,
+          interval,
+          500,
+          15_000,
+        );
+      }
       if (!bars.length) throw new Error("No cTrader trendbars returned");
       closes = bars
         .slice()
