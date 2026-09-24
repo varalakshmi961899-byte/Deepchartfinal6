@@ -1,4 +1,4 @@
-import { db, pool, settingsTable } from "@workspace/db";
+import { db, pool, settingsTable, watchlistTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { AppConfigService } from "./AppConfigService.js";
@@ -275,6 +275,9 @@ export class TelegramService {
         return;
       }
       if (data === "menu:alerts") { await this.sendRecentAlerts(chatId); return; }
+      if (data === "menu:scanner") { await this.sendScanner(chatId); return; }
+      if (data.startsWith("sc:")) { await this.sendScannerDetail(chatId, data.slice(3)); return; }
+      if (data.startsWith("scd:")) { await this.sendScannerDetail(chatId, data.slice(4)); return; }
       if (data === "menu:create") {
         await this.sendMessage("➕ <b>CREATE</b>\n\nCreation is chart-linked because the trendline coordinates come from the chart. Create the trendline in DeepChart, then use this Telegram menu to modify, snooze, resume or delete it.", chatId, true, this.backKeyboard());
         return;
@@ -326,6 +329,134 @@ export class TelegramService {
     }
   }
 
+  private readonly scannerTimeframes = [
+    { key: "15", label: "15m" },
+    { key: "60", label: "1H" },
+    { key: "240", label: "4H" },
+  ];
+
+  private normalizeScannerSymbol(symbol: string): string {
+    const s = String(symbol).toUpperCase().trim().replace(/\.(pro|raw|ecn|std)$/i, "");
+    if (s.endsWith("USDT")) return s;
+    if (s.endsWith("USD")) return s.slice(0, -3) + "USDT";
+    return s + "USDT";
+  }
+
+  private calculateEma(values: number[], period: number): number | null {
+    if (values.length < period) return null;
+    const multiplier = 2 / (period + 1);
+    let ema = values.slice(0, period).reduce((sum, value) => sum + value, 0) / period;
+    for (let i = period; i < values.length; i++) ema = (values[i] - ema) * multiplier + ema;
+    return ema;
+  }
+
+  private async fetchScannerEma(symbol: string, interval: string): Promise<{
+    symbol: string; interval: string; price: number; ema20: number; ema50: number; ema200: number;
+    bullish20: boolean; bullish50: boolean; bullish200: boolean;
+    trend: "STRONG BULL" | "BULL" | "MIXED" | "BEAR" | "STRONG BEAR";
+  }> {
+    const normalized = this.normalizeScannerSymbol(symbol);
+    const params = new URLSearchParams({ category: "linear", symbol: normalized, interval, limit: "500" });
+    const response = await fetch("https://api.bybit.com/v5/market/kline?" + params.toString(), { headers: { accept: "application/json" } });
+    if (!response.ok) throw new Error("Bybit HTTP " + response.status);
+    const json = await response.json() as { retCode?: number; retMsg?: string; result?: { list?: string[][] } };
+    if (json.retCode !== 0) throw new Error("Bybit " + json.retCode + ": " + (json.retMsg ?? "unknown error"));
+    const closes = (json.result?.list ?? []).map(row => Number(row[4])).filter(Number.isFinite).reverse();
+    if (closes.length < 200) throw new Error("Not enough candle history for EMA200");
+    const price = closes.at(-1)!;
+    const ema20 = this.calculateEma(closes, 20);
+    const ema50 = this.calculateEma(closes, 50);
+    const ema200 = this.calculateEma(closes, 200);
+    if (ema20 == null || ema50 == null || ema200 == null) throw new Error("EMA calculation failed");
+    const bullish20 = price >= ema20, bullish50 = price >= ema50, bullish200 = price >= ema200;
+    const strongBull = price >= ema20 && ema20 > ema50 && ema50 > ema200;
+    const strongBear = price <= ema20 && ema20 < ema50 && ema50 < ema200;
+    const bull = price >= ema50 && ema20 >= ema50;
+    const bear = price <= ema50 && ema20 <= ema50;
+    const trend = strongBull ? "STRONG BULL" : strongBear ? "STRONG BEAR" : bull ? "BULL" : bear ? "BEAR" : "MIXED";
+    return { symbol, interval, price, ema20, ema50, ema200, bullish20, bullish50, bullish200, trend };
+  }
+
+  private scannerBadge(trend: string): string {
+    if (trend === "STRONG BULL") return "🟢🟢";
+    if (trend === "BULL") return "🟢";
+    if (trend === "STRONG BEAR") return "🔴🔴";
+    if (trend === "BEAR") return "🔴";
+    return "🟡";
+  }
+
+  private formatScannerNumber(value: number): string {
+    if (!Number.isFinite(value)) return "—";
+    if (Math.abs(value) >= 1000) return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+    if (Math.abs(value) >= 1) return value.toFixed(4);
+    return value.toPrecision(6);
+  }
+
+  private async sendScanner(chatId: string): Promise<void> {
+    const rows = await db.select().from(watchlistTable).orderBy(watchlistTable.position);
+    if (!rows.length) {
+      await this.sendMessage("🔎 <b>MARKET SCANNER</b>\n\n⚠️ Your DeepChart watchlist is empty.\nAdd coins to the app Watchlist first, then scan again.", chatId, true, this.backKeyboard());
+      return;
+    }
+    await this.sendMessage("🔎 <b>MARKET SCANNER</b>\n\nScanning your watchlist on <b>15m • 1H • 4H</b> using EMA 20/50/200…", chatId, true);
+    const results: Array<{ symbol: string; details: Awaited<ReturnType<TelegramService["fetchScannerEma"]>>[] }> = [];
+    for (const row of rows.slice(0, 40)) {
+      const details: Awaited<ReturnType<TelegramService["fetchScannerEma"]>>[] = [];
+      for (const tf of this.scannerTimeframes) {
+        try { details.push(await this.fetchScannerEma(row.symbol, tf.key)); }
+        catch (err) { logger.warn({ symbol: row.symbol, timeframe: tf.label, err: String(err) }, "TelegramService: scanner EMA fetch failed"); }
+      }
+      if (details.length) results.push({ symbol: row.symbol, details });
+    }
+    if (!results.length) {
+      await this.sendMessage("🔎 <b>MARKET SCANNER</b>\n\n❌ No watchlist coin returned usable Bybit EMA data.", chatId, true, this.backKeyboard());
+      return;
+    }
+    const lines = ["🔎 <b>WATCHLIST EMA SCANNER</b>", "", "🟢 Bullish  🔴 Bearish  🟡 Mixed", ""];
+    const keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
+    for (const item of results) {
+      const summary = item.details.map(d => d.interval + " " + this.scannerBadge(d.trend)).join("  ");
+      const bull = item.details.filter(d => d.trend === "STRONG BULL" || d.trend === "BULL").length;
+      const bear = item.details.filter(d => d.trend === "STRONG BEAR" || d.trend === "BEAR").length;
+      const overall = bull > bear ? "🟢 BULLISH" : bear > bull ? "🔴 BEARISH" : "🟡 MIXED";
+      lines.push("<b>" + this.escapeHtml(item.symbol) + "</b> — " + overall);
+      lines.push(summary);
+      keyboard.push([{ text: "📊 " + item.symbol + " — details", callback_data: "sc:" + item.symbol.slice(0, 20) }]);
+    }
+    keyboard.push([{ text: "🔄 Scan Again", callback_data: "menu:scanner" }]);
+    keyboard.push([{ text: "⬅️ Back", callback_data: "menu:home" }]);
+    await this.sendMessage(lines.join("\n"), chatId, true, { inline_keyboard: keyboard });
+  }
+
+  private async sendScannerDetail(chatId: string, rawSymbol: string): Promise<void> {
+    const symbol = rawSymbol.toUpperCase().trim();
+    const rows = await db.select().from(watchlistTable);
+    const row = rows.find(item => item.symbol.toUpperCase() === symbol);
+    if (!row) { await this.sendMessage("❌ Coin is no longer in your watchlist.", chatId, true, this.backKeyboard()); return; }
+    const details: Array<Awaited<ReturnType<TelegramService["fetchScannerEma"]>> | null> = [];
+    for (const tf of this.scannerTimeframes) {
+      try { details.push(await this.fetchScannerEma(row.symbol, tf.key)); }
+      catch (err) { logger.warn({ symbol: row.symbol, timeframe: tf.label, err: String(err) }, "TelegramService: scanner detail fetch failed"); details.push(null); }
+    }
+    const valid = details.filter((d): d is Awaited<ReturnType<TelegramService["fetchScannerEma"]>> => !!d);
+    if (!valid.length) { await this.sendMessage("❌ No EMA data available for <b>" + this.escapeHtml(row.symbol) + "</b>.", chatId, true, this.backKeyboard()); return; }
+    const blocks: string[] = ["🔎 <b>" + this.escapeHtml(row.symbol) + " — EMA SCANNER</b>", "", "EMA logic: price vs EMA20/50/200 + EMA alignment.", "🟢 = price above EMA • 🔴 = price below EMA", ""];
+    for (const d of valid) {
+      blocks.push("⏱ <b>" + d.interval + " — " + d.trend + " " + this.scannerBadge(d.trend) + "</b>");
+      blocks.push("💰 Price: <b>" + this.formatScannerNumber(d.price) + "</b>");
+      blocks.push("20 EMA: " + this.formatScannerNumber(d.ema20) + " " + (d.bullish20 ? "🟢 BULLISH" : "🔴 BEARISH"));
+      blocks.push("50 EMA: " + this.formatScannerNumber(d.ema50) + " " + (d.bullish50 ? "🟢 BULLISH" : "🔴 BEARISH"));
+      blocks.push("200 EMA: " + this.formatScannerNumber(d.ema200) + " " + (d.bullish200 ? "🟢 BULLISH" : "🔴 BEARISH"));
+      blocks.push("Structure: 20 " + (d.ema20 > d.ema50 ? ">" : "<") + " 50 " + (d.ema50 > d.ema200 ? ">" : "<") + " 200", "");
+    }
+    blocks.push("📌 Strong Bull = price > EMA20 > EMA50 > EMA200.");
+    blocks.push("📌 Strong Bear = price < EMA20 < EMA50 < EMA200.");
+    blocks.push("📌 Mixed = EMAs are not fully aligned.");
+    await this.sendMessage(blocks.join("\n").slice(0, 3900), chatId, true, { inline_keyboard: [
+      [{ text: "🔄 Refresh", callback_data: "scd:" + row.symbol.slice(0, 20) }],
+      [{ text: "⬅️ Scanner", callback_data: "menu:scanner" }, { text: "🏠 Menu", callback_data: "menu:home" }],
+    ] });
+  }
   private async sendTrendlineList(chatId: string, title: string): Promise<void> {
     const result = await pool.query(`
       SELECT id, symbol, timeframe, condition, drawing_type, alert_status, is_active, telegram_enabled, drawing_display_id
@@ -505,7 +636,8 @@ export class TelegramService {
   private mainMenuKeyboard() {
     return { inline_keyboard: [
       [{ text: "📈 Trendlines", callback_data: "menu:trendlines" }, { text: "🔔 Alerts", callback_data: "menu:alerts" }],
-      [{ text: "➕ Create", callback_data: "menu:create" }, { text: "✏️ Modify", callback_data: "menu:modify" }],
+      [{ text: "🔎 Scanner", callback_data: "menu:scanner" }, { text: "➕ Create", callback_data: "menu:create" }],
+      [{ text: "✏️ Modify", callback_data: "menu:modify" }],
       [{ text: "😴 Snooze", callback_data: "menu:snooze" }, { text: "▶️ Resume", callback_data: "menu:resume" }],
       [{ text: "🗑 Delete", callback_data: "menu:delete" }, { text: "📊 Statistics", callback_data: "menu:stats" }],
       [{ text: "🔄 Refresh", callback_data: "menu:home" }],
