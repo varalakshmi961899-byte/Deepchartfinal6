@@ -166,6 +166,28 @@ async function refreshCtraderSymbolCatalog(): Promise<void> {
 export async function getCtraderSymbolRow(
   symbol: string,
 ): Promise<{ symbolId: number; symbolName: string } | null> {
+  const normalized = symbol.toUpperCase().trim();
+  if (DELTA_ONLY_LIVE_TICK_SYMBOLS.has(normalized)) return null;
+
+  const result = await pool.query(
+    "SELECT symbol_id, symbol_name FROM ctrader_symbols WHERE UPPER(symbol_name) = $1 LIMIT 1",
+    [normalized],
+  );
+  if (result.rows.length) {
+    const row = result.rows[0] as { symbol_id: number; symbol_name: string };
+    return { symbolId: Number(row.symbol_id), symbolName: row.symbol_name };
+  }
+
+  await refreshCtraderSymbolCatalog();
+  const retry = await pool.query(
+    "SELECT symbol_id, symbol_name FROM ctrader_symbols WHERE UPPER(symbol_name) = $1 LIMIT 1",
+    [normalized],
+  );
+  if (!retry.rows.length) return null;
+
+  const row = retry.rows[0] as { symbol_id: number; symbol_name: string };
+  return { symbolId: Number(row.symbol_id), symbolName: row.symbol_name };
+}
 
 /**
  * Load credentials + full symbolMap (no subscription set — engine starts empty).
