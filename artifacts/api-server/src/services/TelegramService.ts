@@ -442,7 +442,18 @@ export class TelegramService {
     return "🟡";
   }
 
-  private scannerTrendLabel(trend: string): string {\n    const labels: Record<string, string> = {\n      "STRONG BULL": "Strong Bull",\n      "BULL": "Bull",\n      "Mixed": "Mixed",\n      "BEAR": "Bear",\n      "STRONG BEAR": "Strong Bear",\n    };\n    return labels[trend] ?? trend;\n  }\n\n  private formatScannerNumber(value: number): string {
+  private scannerTrendLabel(trend: string): string {
+    const labels: Record<string, string> = {
+      "STRONG BULL": "Strong Bull",
+      "BULL": "Bull",
+      "MIXED": "Mixed",
+      "BEAR": "Bear",
+      "STRONG BEAR": "Strong Bear",
+    };
+    return labels[trend] ?? trend;
+  }
+
+  private formatScannerNumber(value: number): string {
     if (!Number.isFinite(value)) return "—";
     if (Math.abs(value) >= 1000) return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
     if (Math.abs(value) >= 1) return value.toFixed(4);
