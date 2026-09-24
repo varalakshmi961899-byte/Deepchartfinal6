@@ -19,6 +19,7 @@ import { pool } from "@workspace/db";
 import { db, watchlistTable } from "@workspace/db";
 import { encrypt, decrypt } from "../services/BrokerEncryption.js";
 import { logger } from "../lib/logger.js";
+import { fetchSymbolsViaProtoOA } from "../lib/ctraderProtoOA.js";
 
 const CTRADER_TOKEN_URL_SPOTS = "https://openapi.ctrader.com/apps/token";
 
@@ -107,20 +108,64 @@ async function ensureTables(): Promise<void> {
  * Delta-only live-tick symbols deliberately return null even if cTrader has
  * the same symbol in its catalog. This prevents duplicate broker feeds.
  */
+let symbolCatalogRefreshPromise: Promise<void> | null = null;
+let symbolCatalogRefreshedAt = 0;
+const SYMBOL_CATALOG_REFRESH_COOLDOWN = 30_000;
+
+async function refreshCtraderSymbolCatalog(): Promise<void> {
+  const now = Date.now();
+  if (symbolCatalogRefreshPromise) return symbolCatalogRefreshPromise;
+  if (now - symbolCatalogRefreshedAt < SYMBOL_CATALOG_REFRESH_COOLDOWN) return;
+
+  const creds = ctraderTickEngine.getEngineCredentials();
+  if (!creds) return;
+
+  symbolCatalogRefreshPromise = (async () => {
+    try {
+      const symbols = await fetchSymbolsViaProtoOA({
+        ctidTraderAccountId: creds.ctidTraderAccountId,
+        isLive: creds.isLive,
+        accessToken: creds.accessToken,
+        clientId: creds.clientId,
+        clientSecret: creds.clientSecret,
+        timeoutMs: 30_000,
+      });
+      await pool.query(`CREATE TABLE IF NOT EXISTS ctrader_symbols (
+        symbol_id INTEGER PRIMARY KEY,
+        symbol_name TEXT NOT NULL,
+        description TEXT NOT NULL,
+        pip_position INTEGER NOT NULL,
+        digits INTEGER NOT NULL,
+        fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`);
+      for (const sym of symbols) {
+        await pool.query(
+          `INSERT INTO ctrader_symbols
+             (symbol_id,symbol_name,description,pip_position,digits,fetched_at)
+           VALUES ($1,$2,$3,$4,$5,NOW())
+           ON CONFLICT (symbol_id) DO UPDATE SET
+             symbol_name=EXCLUDED.symbol_name,
+             description=EXCLUDED.description,
+             pip_position=EXCLUDED.pip_position,
+             digits=EXCLUDED.digits,
+             fetched_at=NOW()`,
+          [sym.symbolId, sym.symbolName, sym.description, sym.pipPosition, sym.digits],
+        );
+      }
+      symbolCatalogRefreshedAt = Date.now();
+      logger.info({ count: symbols.length }, "CtraderSpots: symbol catalog refreshed for market-data lookup");
+    } catch (err) {
+      logger.warn({ err: String(err) }, "CtraderSpots: symbol catalog refresh failed");
+    } finally {
+      symbolCatalogRefreshPromise = null;
+    }
+  })();
+  return symbolCatalogRefreshPromise;
+}
+
 export async function getCtraderSymbolRow(
   symbol: string,
 ): Promise<{ symbolId: number; symbolName: string } | null> {
-  const normalized = symbol.toUpperCase().trim();
-  if (DELTA_ONLY_LIVE_TICK_SYMBOLS.has(normalized)) return null;
-
-  const result = await pool.query(
-    "SELECT symbol_id, symbol_name FROM ctrader_symbols WHERE UPPER(symbol_name) = $1 LIMIT 1",
-    [normalized],
-  );
-  if (!result.rows.length) return null;
-  const row = result.rows[0] as { symbol_id: number; symbol_name: string };
-  return { symbolId: Number(row.symbol_id), symbolName: row.symbol_name };
-}
 
 /**
  * Load credentials + full symbolMap (no subscription set — engine starts empty).
