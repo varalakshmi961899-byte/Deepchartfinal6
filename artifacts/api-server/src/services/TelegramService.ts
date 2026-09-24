@@ -1,4 +1,4 @@
-import { db, settingsTable } from "@workspace/db";
+import { db, pool, settingsTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { AppConfigService } from "./AppConfigService.js";
@@ -19,9 +19,9 @@ export class TelegramService {
   private globalEnabled: boolean = true;  // global on/off toggle (does not disconnect)
   private interactionRunning = false;
   private interactionAbort?: AbortController;
-  private updateOffset = 0;
+  private updateOffset = 0;\n  private alertEngine?: { reloadAlerts?: () => Promise<void> };
 
-  constructor() {
+  setAlertEngine(engine: { reloadAlerts?: () => Promise<void> }): void { this.alertEngine = engine; }\n\n  constructor() {
     this.botToken = process.env["TELEGRAM_BOT_TOKEN"];
     this.chatId   = process.env["TELEGRAM_CHAT_ID"];
     this.enabled  = !!(this.botToken && this.chatId);
@@ -265,19 +265,238 @@ export class TelegramService {
 
   private async handleCallback(callbackId: string, chatId: string, data: string): Promise<void> {
     await this.answerCallbackQuery(callbackId);
-    const screens: Record<string, { text: string; keyboard: unknown }> = {
-      "menu:trendlines": { text: "📈 <b>TRENDLINES</b>\n\nPhase 1 connected. Existing trendline records will be shown in the next phase.", keyboard: this.backKeyboard() },
-      "menu:alerts": { text: "🔔 <b>ALERTS</b>\n\nExisting alert system is connected. Controls will be wired in the next phase.", keyboard: this.backKeyboard() },
-      "menu:create": { text: "➕ <b>CREATE</b>\n\nChart-linked creation will be added in the next phase.", keyboard: this.backKeyboard() },
-      "menu:modify": { text: "✏️ <b>MODIFY</b>\n\nTrendline selection will be added in the next phase.", keyboard: this.backKeyboard() },
-      "menu:snooze": { text: "😴 <b>SNOOZE</b>\n\nSnooze controls will be added in the next phase.", keyboard: this.backKeyboard() },
-      "menu:resume": { text: "▶️ <b>RESUME</b>\n\nResume controls will be added in the next phase.", keyboard: this.backKeyboard() },
-      "menu:delete": { text: "🗑 <b>DELETE</b>\n\nDelete controls will be added in the next phase.", keyboard: this.backKeyboard() },
-      "menu:stats": { text: "📊 <b>STATISTICS</b>\n\nStatistics will be connected to existing alert tables in the next phase.", keyboard: this.backKeyboard() },
-    };
-    if (data === "menu:home") { await this.sendMainMenu(chatId); return; }
-    const screen = screens[data];
-    if (screen) await this.sendMessage(screen.text, chatId, true, screen.keyboard);
+    try {
+      if (data === "menu:home") { await this.sendMainMenu(chatId); return; }
+      if (data === "menu:trendlines" || data === "menu:modify" || data === "menu:snooze" || data === "menu:resume" || data === "menu:delete") {
+        await this.sendTrendlineList(chatId, data === "menu:trendlines" ? "📈 <b>TRENDLINES</b>" : "🎛 <b>SELECT TRENDLINE</b>");
+        return;
+      }
+      if (data === "menu:alerts") { await this.sendRecentAlerts(chatId); return; }
+      if (data === "menu:create") {
+        await this.sendMessage("➕ <b>CREATE</b>\n\nCreation is chart-linked because the trendline coordinates come from the chart. Create the trendline in DeepChart, then use this Telegram menu to modify, snooze, resume or delete it.", chatId, true, this.backKeyboard());
+        return;
+      }
+      if (data === "menu:stats") { await this.sendStatistics(chatId); return; }
+      if (data.startsWith("tl:")) { await this.sendTrendlineDetail(chatId, Number(data.slice(3))); return; }
+      if (data.startsWith("tm:")) { await this.sendModifyMenu(chatId, Number(data.slice(3))); return; }
+      if (data.startsWith("tc:")) {
+        const [, idText, condition] = data.split(":");
+        await this.modifyTrendline(chatId, Number(idText), "condition", condition);
+        return;
+      }
+      if (data.startsWith("tg:")) {
+        await this.toggleTelegram(chatId, Number(data.slice(3)));
+        return;
+      }
+      if (data.startsWith("ts:")) {
+        await this.setTrendlineStatus(chatId, Number(data.slice(3)), "paused");
+        return;
+      }
+      if (data.startsWith("tr:")) {
+        await this.setTrendlineStatus(chatId, Number(data.slice(3)), "active");
+        return;
+      }
+      if (data.startsWith("td:")) {
+        const id = Number(data.slice(3));
+        await this.sendMessage("⚠️ <b>CONFIRM DELETE</b>\n\nThis removes the existing trendline alert from the database and chart alert engine.\n\nDelete it?", chatId, true, {
+          inline_keyboard: [[
+            { text: "✅ Yes, Delete", callback_data: `ty:${id}` },
+            { text: "❌ Cancel", callback_data: `tl:${id}` },
+          ]]
+        });
+        return;
+      }
+      if (data.startsWith("ty:")) {
+        await this.deleteTrendline(chatId, Number(data.slice(3)));
+        return;
+      }
+      if (data.startsWith("tn:")) {
+        await this.sendTrendlineList(chatId, "📈 <b>TRENDLINES</b>");
+        return;
+      }
+      if (data.startsWith("ae:")) { await this.sendAlertDetail(chatId, Number(data.slice(3))); return; }
+      if (data === "alerts:list") { await this.sendRecentAlerts(chatId); return; }
+      if (data === "refresh:all") { await this.sendMainMenu(chatId); return; }
+    } catch (err) {
+      logger.error({ err, callbackData: data }, "TelegramService: phase 2 callback failed");
+      await this.sendMessage("❌ <b>Action failed</b>\n\nThe operation could not be completed. Please refresh and try again.", chatId, true, this.backKeyboard());
+    }
+  }
+
+  private async sendTrendlineList(chatId: string, title: string): Promise<void> {
+    const result = await pool.query(`
+      SELECT id, symbol, timeframe, condition, drawing_type, alert_status, is_active, telegram_enabled, drawing_display_id
+      FROM trendlines ORDER BY id DESC LIMIT 40
+    `);
+    const rows = result.rows as any[];
+    if (!rows.length) {
+      await this.sendMessage(`${title}\n\nNo trendlines found.`, chatId, true, this.backKeyboard());
+      return;
+    }
+    const keyboard = rows.map(r => [{
+      text: `${r.drawing_display_id || `DB-${r.id}`} • ${r.symbol} • ${r.alert_status}`,
+      callback_data: `tl:${r.id}`,
+    }]);
+    keyboard.push([{ text: "⬅️ Back", callback_data: "menu:home" }]);
+    await this.sendMessage(`${title}\n\nSelect an existing trendline:`, chatId, true, { inline_keyboard: keyboard });
+  }
+
+  private async sendTrendlineDetail(chatId: string, id: number): Promise<void> {
+    if (!Number.isInteger(id)) return;
+    const result = await db.execute(`
+      SELECT id, symbol, timeframe, condition, drawing_type, alert_status, is_active, telegram_enabled,
+             drawing_display_id, notes, point1_price, point1_time, point2_price, point2_time,
+             triggered_price, triggered_at, repeat_mode, reminder_count
+      FROM trendlines WHERE id = ${id} LIMIT 1
+    `);
+    const r = (result.rows as any[])[0];
+    if (!r) {
+      await this.sendMessage("❌ Trendline not found.", chatId, true, this.backKeyboard());
+      return;
+    }
+    const displayId = r.drawing_display_id || `DB-${r.id}`;
+    const status = r.alert_status || (r.is_active ? "active" : "paused");
+    const lines = [
+      `📈 <b>${displayId}</b>`,
+      `📊 <b>Symbol:</b> ${r.symbol}`,
+      `⏱ <b>Timeframe:</b> ${r.timeframe}`,
+      `🎯 <b>Condition:</b> ${r.condition}`,
+      `📐 <b>Drawing:</b> ${r.drawing_type}`,
+      `⚡ <b>Status:</b> ${status}`,
+      `📨 <b>Telegram:</b> ${r.telegram_enabled ? "ON" : "OFF"}`,
+      r.triggered_price != null ? `💹 <b>Triggered:</b> ${r.triggered_price}` : "",
+      r.notes ? `📝 <b>Notes:</b> ${this.escapeHtml(String(r.notes))}` : "",
+    ].filter(Boolean).join("\n");
+    const toggleText = r.telegram_enabled ? "🔕 Telegram OFF" : "🔔 Telegram ON";
+    const statusButton = status === "paused" || !r.is_active
+      ? { text: "▶️ Resume", callback_data: `tr:${r.id}` }
+      : { text: "😴 Snooze", callback_data: `ts:${r.id}` };
+    await this.sendMessage(lines, chatId, true, {
+      inline_keyboard: [
+        [{ text: "✏️ Modify", callback_data: `tm:${r.id}` }, statusButton],
+        [{ text: toggleText, callback_data: `tg:${r.id}` }, { text: "🗑 Delete", callback_data: `td:${r.id}` }],
+        [{ text: "⬅️ Trendlines", callback_data: "menu:trendlines" }],
+      ]
+    });
+  }
+
+  private async sendModifyMenu(chatId: string, id: number): Promise<void> {
+    const conditions = ["touch","break","retest","cross_above","cross_below","breakout","atr_proximity","above_price","below_price","touch_price","enter_zone","exit_zone","rejection"];
+    const result = await db.execute(`SELECT drawing_display_id, condition FROM trendlines WHERE id = ${id} LIMIT 1`);
+    const r = (result.rows as any[])[0];
+    if (!r) { await this.sendMessage("❌ Trendline not found.", chatId, true, this.backKeyboard()); return; }
+    const buttons = [];
+    for (let i=0;i<conditions.length;i+=2) {
+      buttons.push(conditions.slice(i,i+2).map(c => ({ text: (c === r.condition ? "✅ " : "") + c.replace(/_/g," "), callback_data: `tc:${id}:${c}` })));
+    }
+    buttons.push([{ text: "⬅️ Back", callback_data: `tl:${id}` }]);
+    await this.sendMessage(`✏️ <b>MODIFY ${r.drawing_display_id || `DB-${id}`}</b>\n\nChoose condition:`, chatId, true, { inline_keyboard: buttons });
+  }
+
+  private async modifyTrendline(chatId: string, id: number, field: "condition", value: string): Promise<void> {
+    const allowed = new Set(["touch","break","retest","cross_above","cross_below","breakout","atr_proximity","above_price","below_price","touch_price","enter_zone","exit_zone","rejection"]);
+    if (!allowed.has(value)) throw new Error("Unsupported condition");
+    await db.execute(`UPDATE trendlines SET condition = ${value} WHERE id = ${id}`);
+    await this.reloadAlertEngine();
+    await this.sendMessage(`✅ Condition updated to <b>${value}</b>.`, chatId, true);
+    await this.sendTrendlineDetail(chatId, id);
+  }
+
+  private async toggleTelegram(chatId: string, id: number): Promise<void> {
+    await db.execute(`UPDATE trendlines SET telegram_enabled = NOT telegram_enabled WHERE id = ${id}`);
+    await this.reloadAlertEngine();
+    await this.sendTrendlineDetail(chatId, id);
+  }
+
+  private async setTrendlineStatus(chatId: string, id: number, status: "paused" | "active"): Promise<void> {
+    await db.execute(`UPDATE trendlines SET alert_status = ${status}, is_active = ${status === "active"} WHERE id = ${id}`);
+    await this.reloadAlertEngine();
+    await this.sendTrendlineDetail(chatId, id);
+  }
+
+  private async deleteTrendline(chatId: string, id: number): Promise<void> {
+    await db.execute(`DELETE FROM trendlines WHERE id = ${id}`);
+    await this.reloadAlertEngine();
+    await this.sendMessage(`✅ Trendline deleted.\n\nThe existing chart ID was removed from active alerts.`, chatId, true, {
+      inline_keyboard: [[{ text: "📈 Trendlines", callback_data: "menu:trendlines" }, { text: "🏠 Menu", callback_data: "menu:home" }]]
+    });
+  }
+
+  private async sendRecentAlerts(chatId: string): Promise<void> {
+    const result = await db.execute(`
+      SELECT id, symbol, timeframe, drawing_type, condition, price_at_trigger, projected_price, message, created_at
+      FROM alert_events_v2 ORDER BY created_at DESC LIMIT 15
+    `);
+    const rows = result.rows as any[];
+    if (!rows.length) {
+      await this.sendMessage("🔔 <b>ALERTS</b>\n\nNo alert history found.", chatId, true, this.backKeyboard());
+      return;
+    }
+    const keyboard = rows.map(r => [{
+      text: `#${r.id} • ${r.symbol} • ${r.condition}`,
+      callback_data: `ae:${r.id}`,
+    }]);
+    keyboard.push([{ text: "⬅️ Back", callback_data: "menu:home" }]);
+    await this.sendMessage("🔔 <b>ALERTS</b>\n\nRecent alert history:", chatId, true, { inline_keyboard: keyboard });
+  }
+
+  private async sendAlertDetail(chatId: string, id: number): Promise<void> {
+    const result = await db.execute(`
+      SELECT id, symbol, timeframe, drawing_type, condition, price_at_trigger, projected_price, message, created_at
+      FROM alert_events_v2 WHERE id = ${id} LIMIT 1
+    `);
+    const r = (result.rows as any[])[0];
+    if (!r) { await this.sendMessage("❌ Alert event not found.", chatId, true, this.backKeyboard()); return; }
+    const text = [
+      `🔔 <b>ALERT #${r.id}</b>`,
+      `📊 <b>Symbol:</b> ${r.symbol}`,
+      `⏱ <b>Timeframe:</b> ${r.timeframe || "-"}`,
+      `📐 <b>Drawing:</b> ${r.drawing_type || "-"}`,
+      `🎯 <b>Condition:</b> ${r.condition}`,
+      r.price_at_trigger != null ? `💹 <b>Triggered:</b> ${r.price_at_trigger}` : "",
+      r.projected_price != null ? `📏 <b>Projected:</b> ${r.projected_price}` : "",
+      r.message ? `📝 <b>Message:</b> ${this.escapeHtml(String(r.message))}` : "",
+      r.created_at ? `⏰ ${new Date(r.created_at).toUTCString()}` : "",
+    ].filter(Boolean).join("\n");
+    await this.sendMessage(text, chatId, true, { inline_keyboard: [
+      [{ text: "🔔 Alerts", callback_data: "menu:alerts" }],
+      [{ text: "🏠 Menu", callback_data: "menu:home" }],
+    ]});
+  }
+
+  private async sendStatistics(chatId: string): Promise<void> {
+    const result = await db.execute(`
+      SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE alert_status = 'active' AND is_active = true)::int AS active,
+        COUNT(*) FILTER (WHERE alert_status = 'paused' OR is_active = false)::int AS paused,
+        COUNT(*) FILTER (WHERE alert_status = 'triggered' OR is_triggered = true)::int AS triggered,
+        COUNT(*) FILTER (WHERE alert_status = 'expired')::int AS expired
+      FROM trendlines
+    `);
+    const events = await db.execute(`SELECT COUNT(*)::int AS total FROM alert_events_v2`);
+    const r = (result.rows as any[])[0] || {};
+    const e = (events.rows as any[])[0] || {};
+    const text = [
+      "📊 <b>STATISTICS</b>",
+      "",
+      `📈 Total trendlines: <b>${r.total ?? 0}</b>`,
+      `🟢 Active: <b>${r.active ?? 0}</b>`,
+      `😴 Paused: <b>${r.paused ?? 0}</b>`,
+      `🔔 Triggered: <b>${r.triggered ?? 0}</b>`,
+      `⌛ Expired: <b>${r.expired ?? 0}</b>`,
+      `📨 Alert events: <b>${e.total ?? 0}</b>`,
+    ].join("\n");
+    await this.sendMessage(text, chatId, true, this.backKeyboard());
+  }
+
+  private escapeHtml(value: string): string {
+    return value.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+  }
+
+  private async reloadAlertEngine(): Promise<void> {
+    const engine = this.alertEngine;
+    if (engine?.reloadAlerts) await engine.reloadAlerts();
   }
 
   private mainMenuKeyboard() {
