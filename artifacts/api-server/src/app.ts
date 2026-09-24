@@ -122,6 +122,25 @@ export function createApp(deps: {
   app.use(express.urlencoded({ extended: true }));
 
   app.use(createAuthRouter());
+
+  // Telegram webhook is intentionally mounted before app PIN auth because
+  // Telegram cannot participate in the browser session. The TelegramService
+  // performs the configured-chat authentication and optional secret-token check.
+  app.post("/api/telegram/webhook", async (req, res): Promise<void> => {
+    const expectedSecret = process.env["TELEGRAM_WEBHOOK_SECRET"]?.trim();
+    if (expectedSecret && req.header("X-Telegram-Bot-Api-Secret-Token") !== expectedSecret) {
+      res.sendStatus(401);
+      return;
+    }
+    try {
+      await deps.telegram.handleWebhookUpdate(req.body);
+      res.sendStatus(200);
+    } catch (err) {
+      logger.error({ err }, "Telegram webhook handler failed");
+      res.sendStatus(500);
+    }
+  });
+
   app.use(requirePinVerified);
   app.use("/api", createRouter(deps));
 
