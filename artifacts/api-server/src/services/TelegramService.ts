@@ -435,14 +435,14 @@ export class TelegramService {
   }
 
   private scannerBadge(trend: string): string {
-    if (trend === "STRONG BULL") return "🟢🟢";
-    if (trend === "BULL") return "🟢";
-    if (trend === "STRONG BEAR") return "🔴🔴";
-    if (trend === "BEAR") return "🔴";
+    if (trend === "STRONG BULL" || trend === "BULL") return "🟢";
+    
+    if (trend === "STRONG BEAR" || trend === "BEAR") return "🔴";
+    
     return "🟡";
   }
 
-  private formatScannerNumber(value: number): string {
+  private scannerTrendLabel(trend: string): string {\n    const labels: Record<string, string> = {\n      "STRONG BULL": "Strong Bull",\n      "BULL": "Bull",\n      "Mixed": "Mixed",\n      "BEAR": "Bear",\n      "STRONG BEAR": "Strong Bear",\n    };\n    return labels[trend] ?? trend;\n  }\n\n  private formatScannerNumber(value: number): string {
     if (!Number.isFinite(value)) return "—";
     if (Math.abs(value) >= 1000) return value.toLocaleString("en-US", { maximumFractionDigits: 2 });
     if (Math.abs(value) >= 1) return value.toFixed(4);
@@ -477,24 +477,24 @@ export class TelegramService {
       }
       results.push({ symbol: row.symbol, details, errors });
     }
-    const lines = ["🔎 <b>WATCHLIST EMA SCANNER</b>", "", `<b>Watchlist symbols:</b> ${results.length}`, "<b>Timeframes:</b> 15m • 1H • 4H", "<b>Indicators:</b> EMA 20 / 50 / 200", ""];
+    const lines = ["🔎 <b>Watchlist EMA Scanner</b>", "", `<b>Watchlist symbols:</b> ${results.length}`, "<b>Timeframes:</b> 15m • 1H • 4H", "<b>Indicators:</b> EMA 20 / 50 / 200", ""];
     const keyboard: Array<Array<{ text: string; callback_data: string }>> = [];
     for (const item of results) {
       const bull = item.details.filter(d => d.trend === "STRONG BULL" || d.trend === "BULL").length;
       const bear = item.details.filter(d => d.trend === "STRONG BEAR" || d.trend === "BEAR").length;
       const overall = item.details.length === 0
-        ? "⚪ DATA UNAVAILABLE"
-        : bull > bear ? "🟢 BULLISH" : bear > bull ? "🔴 BEARISH" : "🟡 MIXED";
+        ? "⚪ Data unavailable"
+        : bull > bear ? "🟢 Bullish" : bear > bull ? "🔴 Bearish" : "🟡 Mixed";
       lines.push("<b>" + this.escapeHtml(item.symbol) + "</b>  " + overall);
       if (item.details.length) {
         for (const d of item.details) {
-          lines.push("  " + d.interval + "  " + this.scannerBadge(d.trend) + " " + d.trend);
+          lines.push("  " + d.interval + "  " + this.scannerBadge(d.trend) + " " + this.scannerTrendLabel(d.trend));
         }
       } else {
         lines.push("  ⚪ EMA data unavailable");
       }
       lines.push("");
-      keyboard.push([{ text: "📊 " + item.symbol + " — details", callback_data: "sc:" + item.symbol.slice(0, 20) }]);
+      keyboard.push([{ text: "📊 " + item.symbol + " — Details", callback_data: "sc:" + item.symbol.slice(0, 20) }]);
     }
     keyboard.push([{ text: "🔄 Scan Again", callback_data: "menu:scanner" }]);
     keyboard.push([{ text: "⬅️ Back", callback_data: "menu:home" }]);
@@ -513,18 +513,18 @@ export class TelegramService {
     }
     const valid = details.filter((d): d is Awaited<ReturnType<TelegramService["fetchScannerEma"]>> => !!d);
     if (!valid.length) { await this.sendMessage("❌ No EMA data available for <b>" + this.escapeHtml(row.symbol) + "</b>.", chatId, true, this.backKeyboard()); return; }
-    const blocks: string[] = ["🔎 <b>" + this.escapeHtml(row.symbol) + " — EMA SCANNER</b>", "", "EMA logic: price vs EMA20/50/200 + EMA alignment.", "🟢 = price above EMA • 🔴 = price below EMA", "📡 Source: " + (await getCtraderSymbolRow(row.symbol).catch(() => null) ? "cTrader" : "Bybit"), ""];
+    const blocks: string[] = ["🔎 <b>" + this.escapeHtml(row.symbol) + " — EMA Scanner</b>", "", "EMA logic: price vs EMA20/50/200 + EMA alignment.", "🟢 = price above EMA • 🔴 = price below EMA • 🟡 = mixed", "📡 Source: " + (await getCtraderSymbolRow(row.symbol).catch(() => null) ? "cTrader" : "Bybit"), ""];
     for (const d of valid) {
-      blocks.push("⏱ <b>" + d.interval + " — " + d.trend + " " + this.scannerBadge(d.trend) + "</b>");
+      blocks.push("⏱ <b>" + d.interval + " — " + this.scannerBadge(d.trend) + " " + this.scannerTrendLabel(d.trend) + "</b>");
       blocks.push("💰 Price: <b>" + this.formatScannerNumber(d.price) + "</b>");
-      blocks.push("20 EMA: " + this.formatScannerNumber(d.ema20) + " " + (d.bullish20 ? "🟢 BULLISH" : "🔴 BEARISH"));
-      blocks.push("50 EMA: " + this.formatScannerNumber(d.ema50) + " " + (d.bullish50 ? "🟢 BULLISH" : "🔴 BEARISH"));
-      blocks.push("200 EMA: " + this.formatScannerNumber(d.ema200) + " " + (d.bullish200 ? "🟢 BULLISH" : "🔴 BEARISH"));
+      blocks.push("20 EMA: " + this.formatScannerNumber(d.ema20) + " " + (d.bullish20 ? "🟢 Bullish" : "🔴 Bearish"));
+      blocks.push("50 EMA: " + this.formatScannerNumber(d.ema50) + " " + (d.bullish50 ? "🟢 Bullish" : "🔴 Bearish"));
+      blocks.push("200 EMA: " + this.formatScannerNumber(d.ema200) + " " + (d.bullish200 ? "🟢 Bullish" : "🔴 Bearish"));
       blocks.push("Structure: 20 " + (d.ema20 > d.ema50 ? ">" : "<") + " 50 " + (d.ema50 > d.ema200 ? ">" : "<") + " 200", "");
     }
-    blocks.push("📌 Strong Bull = price > EMA20 > EMA50 > EMA200.");
-    blocks.push("📌 Strong Bear = price < EMA20 < EMA50 < EMA200.");
-    blocks.push("📌 Mixed = EMAs are not fully aligned.");
+    blocks.push("📌 Strong Bull: price > EMA20 > EMA50 > EMA200.");
+    blocks.push("📌 Strong Bear: price < EMA20 < EMA50 < EMA200.");
+    blocks.push("📌 Mixed: EMAs are not fully aligned.");
     await this.sendMessage(blocks.join("\n").slice(0, 3900), chatId, true, { inline_keyboard: [
       [{ text: "🔄 Refresh", callback_data: "scd:" + row.symbol.slice(0, 20) }],
       [{ text: "⬅️ Scanner", callback_data: "menu:scanner" }, { text: "🏠 Menu", callback_data: "menu:home" }],
