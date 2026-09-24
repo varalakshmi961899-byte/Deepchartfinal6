@@ -434,12 +434,8 @@ export class TelegramService {
     return { symbol, interval, price, ema20, ema50, ema200, bullish20, bullish50, bullish200, trend };
   }
 
-  private scannerBadge(trend: string): string {
-    if (trend === "STRONG BULL" || trend === "BULL") return "🟢";
-    
-    if (trend === "STRONG BEAR" || trend === "BEAR") return "🔴";
-    
-    return "🟡";
+  private scannerBadge(_trend: string): string {
+    return "";
   }
 
   private scannerTrendLabel(trend: string): string {
@@ -585,8 +581,8 @@ export class TelegramService {
       blocks.push("EMA 50: " + this.formatScannerNumber(d.ema50) + " (" + (p50 ? "Price above" : "Price below") + ")");
       blocks.push("EMA 200: " + this.formatScannerNumber(d.ema200) + " (" + (p200 ? "Price above" : "Price below") + ")");
       blocks.push(
-        "EMA structure: 20 " + (d.ema20 > d.ema50 ? ">" : "<") +
-        " 50 " + (d.ema50 > d.ema200 ? ">" : "<") + " 200",
+        "EMA structure: 20 " + (d.ema20 > d.ema50 ? "&gt;" : "&lt;") +
+        " 50 " + (d.ema50 > d.ema200 ? "&gt;" : "&lt;") + " 200",
       );
       blocks.push("Assessment: " + alignment, "");
     }
@@ -595,8 +591,8 @@ export class TelegramService {
       "<b>How to read:</b>",
       "Bullish = price is above the selected EMA.",
       "Bearish = price is below the selected EMA.",
-      "Strong Bull = price > EMA20 > EMA50 > EMA200.",
-      "Strong Bear = price < EMA20 < EMA50 < EMA200.",
+      "Strong Bull = price &gt; EMA20 &gt; EMA50 &gt; EMA200.",
+      "Strong Bear = price &lt; EMA20 &lt; EMA50 &lt; EMA200.",
       "Mixed = the EMAs are not fully aligned.",
     );
 
