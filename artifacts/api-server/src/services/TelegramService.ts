@@ -19,9 +19,12 @@ export class TelegramService {
   private globalEnabled: boolean = true;  // global on/off toggle (does not disconnect)
   private interactionRunning = false;
   private interactionAbort?: AbortController;
-  private updateOffset = 0;\n  private alertEngine?: { reloadAlerts?: () => Promise<void> };
+  private updateOffset = 0;
+  private alertEngine?: { reloadAlerts?: () => Promise<void> };
 
-  setAlertEngine(engine: { reloadAlerts?: () => Promise<void> }): void { this.alertEngine = engine; }\n\n  constructor() {
+  setAlertEngine(engine: { reloadAlerts?: () => Promise<void> }): void { this.alertEngine = engine; }
+
+  constructor() {
     this.botToken = process.env["TELEGRAM_BOT_TOKEN"];
     this.chatId   = process.env["TELEGRAM_CHAT_ID"];
     this.enabled  = !!(this.botToken && this.chatId);
