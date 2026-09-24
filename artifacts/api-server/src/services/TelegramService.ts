@@ -1,6 +1,5 @@
 import { db, pool, settingsTable, watchlistTable } from "@workspace/db";
 import { eq } from "drizzle-orm";
-import { eq } from "drizzle-orm";
 import { logger } from "../lib/logger.js";
 import { AppConfigService } from "./AppConfigService.js";
 
