@@ -131,12 +131,14 @@ export class TelegramService {
     this.botToken = token;
     this.chatId   = chatId;
     this.enabled  = true;
+    await this.startInteractionListener();
 
     logger.info({ tokenMasked: maskToken(token), chatId }, "TelegramService: configured via UI (encrypted)");
     return { success: true };
   }
 
   async disconnect(): Promise<void> {
+    await this.stopInteractionListener();
     try {
       await AppConfigService.delete("TELEGRAM_BOT_TOKEN");
       await AppConfigService.delete("TELEGRAM_CHAT_ID");
